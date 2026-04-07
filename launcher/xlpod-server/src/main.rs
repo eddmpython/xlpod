@@ -12,8 +12,7 @@ use xlpod_server::{
     audit::AuditLog,
     auth::TokenStore,
     bind::{addr_v4, LAUNCHER_VERSION, PROTO},
-    config,
-    make_app,
+    config, make_app,
     rate_limit::RateLimiter,
     state::AppState,
     tls,
@@ -21,12 +20,22 @@ use xlpod_server::{
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    eprintln!("xlpod-server v{LAUNCHER_VERSION} (proto {PROTO})");
+
+    // Phase 1.3 status: rcgen-based local CA generation lives in
+    // `xlpod_server::ca` and is verified end-to-end through the cert
+    // material it produces, but the silent Win32 trust install path
+    // (CertAddEncodedCertificateToStore) triggers a Windows confirmation
+    // dialog on first run. Wiring that into a tray-driven user-consent
+    // flow is Phase 1.4. Until then we keep using the mkcert-issued
+    // material under `.certs/`, which the user installed once during
+    // Phase 0. Operators can override with XLPOD_TLS_CERT/KEY.
     let paths = tls::TlsPaths::from_env_or_default();
+
     let audit_path = std::env::var_os("XLPOD_AUDIT_PATH")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(config::default_audit_path);
 
-    eprintln!("xlpod-server v{LAUNCHER_VERSION} (proto {PROTO})");
     eprintln!("  cert:  {}", paths.cert.display());
     eprintln!("  key:   {}", paths.key.display());
     eprintln!("  audit: {}", audit_path.display());

@@ -9,7 +9,12 @@ license = "Apache-2.0"
 repository = "https://github.com/eddmpython/xlpod"
 
 [workspace.lints.rust]
-unsafe_code = "forbid"
+# Default-deny unsafe; the only allowed exception is the Win32 Crypto FFI
+# in xlpod-server::ca that silently installs the local CA into the user
+# trust store. Every `unsafe` block in the workspace MUST carry an inline
+# `// SAFETY:` comment. Reviewers should reject any new `#[allow(unsafe_code)]`
+# without an entry in `docs/threat-model.md`.
+unsafe_code = "deny"
 unused_must_use = "deny"
 
 [workspace.lints.clippy]

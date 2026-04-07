@@ -8,6 +8,8 @@
 pub mod audit;
 pub mod auth;
 pub mod bind;
+#[cfg(windows)]
+pub mod ca;
 pub mod config;
 pub mod error;
 pub mod middleware;

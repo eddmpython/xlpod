@@ -42,11 +42,13 @@ pub enum Scope {
 }
 
 impl Scope {
+    /// Phase 8 activated all three `ai:*` scopes. The launcher no
+    /// longer rejects them at handshake; the consent dialog branches
+    /// on `ConsentKind::AiHandshake` instead. Kept as a function so a
+    /// future scope can be re-marked reserved without re-plumbing.
+    #[allow(dead_code)]
     pub const fn is_reserved(self) -> bool {
-        matches!(
-            self,
-            Scope::AiProviderCall | Scope::AiCodegenWrite | Scope::AiExecPython
-        )
+        false
     }
 }
 

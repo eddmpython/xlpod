@@ -157,6 +157,72 @@ New surface introduced after the initial draft and the threats it brings:
   returns garbage / hangs. **Mitigation:** `metadata().is_file()` is
   required; everything else gets `not_a_file`.
 
+### From Phase 8 (AI bridge: provider trait + Anthropic + tool dispatch + keychain)
+
+- **T41 (key exfiltration)**: API keys leaking via audit log,
+  response body, or crash dump. **Mitigation**: keys live only in
+  the launcher's keychain (`xlpod_server::ai::keychain`), never in
+  the audit log (`AuditEntry` schema has no key field), never
+  echoed by `/ai/providers` (boolean `has_key` only), never
+  serialized into `/ai/session/.../history`. The `Anthropic`
+  provider reads the key fresh on every request via
+  `keychain.read("anthropic_api_key")` and drops the local copy as
+  soon as the HTTP request is built.
+
+- **T42 (prompt injection driving destructive tools)**: model is
+  coerced by user data (cell content, file content) to call
+  `excel_range_write` or `run_python` with hostile arguments.
+  **Mitigation**: Phase 8 ships per-call consent gating on every
+  mutating tool — `dispatch::run_one` calls
+  `ConsentBackend::request` with the tool's spec before execution.
+  Phase 9 will add a 10-minute trust window with a single dialog
+  for batches of tool calls. The `plan_only` flag (already in the
+  spec, route, and CLI) is the user's escape hatch for inspection
+  before applying any mutation.
+
+- **T43 (scope escalation via dispatch)**: model emits a tool call
+  whose `required_scope` is broader than the user's original
+  token. **Mitigation**: at session-open time
+  (`POST /ai/session`) the launcher computes the *intersection* of
+  the user's token scopes and the AI tool registry, and stores
+  that intersection on the session record. Each tool dispatch
+  re-checks the intersection in `dispatch::run_one`; the integration
+  test `ai_chat_without_scope_is_denied` proves a token without
+  `ai:provider:call` cannot even open a session, and the dispatch
+  flow rejects unknown tools with `ai_tool_denied`.
+
+- **T44 (internal origin spoofing)**: an external HTTP caller
+  forges `Origin: ai://anthropic/<uuid>` to bypass the
+  origin allow-list. **Mitigation**: the existing `origin_guard`
+  middleware on every public route only accepts the values in
+  `ALLOWED_ORIGINS` from `config.rs` (production:
+  `https://addin.xlwings.org`). The `ai://...` origins are
+  *internal* — they appear only in `ConsentRequest::origin` for
+  the dialog body, never in HTTP headers. Phase 9 will introduce a
+  separate `internal_origins` slot if dispatch needs to re-enter
+  the router, but Phase 8 dispatch is in-process and skips the
+  origin guard entirely.
+
+- **T45 (Win32 keychain unsafe FFI)**: third unsafe block in the
+  workspace, alongside the local CA install and the consent
+  dialog. **Mitigation**: each `unsafe` block in `keychain.rs`
+  carries an inline `// SAFETY:` proof enumerating every pointer
+  + length contract; workspace lints stay at `deny(unsafe_code)`
+  with explicit `#[allow]` per block. The `WindowsCredentialKeychain`
+  is `#[cfg(windows)]` so non-Windows builds (Linux CI) compile
+  cleanly without touching the FFI at all. Workspace `unsafe`
+  block count is now 5 (CA: 2, MessageBox: 1, keychain: 3 for
+  read/write/delete).
+
+- **T46 (slow user blocks server during AI consent)**: a user
+  reading the consent dialog for a long time stalls every other
+  request. **Mitigation**: `MessageBoxConsent::request` already
+  runs the modal call inside `tokio::task::spawn_blocking`, so the
+  tokio runtime keeps serving every other route while the dialog
+  is up. The AI dispatch path inherits this — only the single
+  in-flight chat request is blocked, never the launcher's other
+  consumers.
+
 ### From Phase 6 (`/excel/*` COM routes)
 - **T38.** A token with `excel:com` reads or modifies any workbook
   the user has open, not just the one the caller "meant". The launcher

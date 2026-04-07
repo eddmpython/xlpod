@@ -84,7 +84,12 @@ def main() -> int:
             print(f"  health    -> status={health.status} launcher={health.launcher} proto={health.proto}")
 
             handshake = client.handshake(
-                scopes=["fs:read", "run:python", "excel:com"],
+                scopes=[
+                    "fs:read",
+                    "run:python",
+                    "excel:com",
+                    "ai:provider:call",
+                ],
                 fs_roots=[str(repo_root)],
             )
             token_id = handshake.token[:8]
@@ -123,6 +128,55 @@ def main() -> int:
                 print("  excel.wbs -> SKIP: pywin32 not in worker python")
             except xlpod.ExcelNotRunning:
                 print("  excel.wbs -> SKIP: Excel is not running")
+
+            # Phase 8 — AI bridge. The launcher accepts any
+            # ai:provider:call token and the consent dialog (Phase 4
+            # mechanism) gates the actual call. With no Anthropic key
+            # in the keychain, /ai/chat returns ai_provider_unconfigured
+            # — we treat that as a successful demo of the wire.
+            try:
+                providers = client.list_providers()
+                names = ", ".join(
+                    f"{p.name}({'set' if p.has_key else 'no-key'})" for p in providers
+                )
+                print(f"  ai.providers -> {names}")
+
+                session = client.open_session()
+                print(
+                    f"  ai.session   -> id={session.session_id[:8]}.. "
+                    f"model={session.model} scopes={len(session.granted_scopes)}"
+                )
+                # Try a chat — will likely fail with provider_unconfigured
+                # unless ANTHROPIC_API_KEY was injected via set_provider_key.
+                ak = os.environ.get("ANTHROPIC_API_KEY")
+                if ak:
+                    client.set_provider_key(provider="anthropic", key=ak)
+                try:
+                    resp = client.chat(
+                        session_id=session.session_id,
+                        messages=[
+                            {
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "text",
+                                        "text": "Say 'xlpod hello' in 3 words.",
+                                    }
+                                ],
+                            }
+                        ],
+                        max_tokens=50,
+                    )
+                    text = ""
+                    for block in resp.message.get("content", []):
+                        if block.get("type") == "text":
+                            text = block.get("text", "")
+                            break
+                    print(f"  ai.chat      -> ok stop={resp.stop_reason} text={text!r}")
+                except xlpod.AIProviderUnconfigured:
+                    print("  ai.chat      -> SKIP: no anthropic key (set ANTHROPIC_API_KEY)")
+            except xlpod.XlpodError as e:
+                print(f"  ai           -> SKIP: {type(e).__name__}: {e}")
     except xlpod.LauncherUnreachable as e:
         print(f"FAIL: {e}", file=sys.stderr)
         print("hint: start the launcher with `cargo run -p xlpod-server`", file=sys.stderr)

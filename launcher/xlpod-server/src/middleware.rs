@@ -146,6 +146,10 @@ pub async fn require_excel_com(request: Request, next: Next) -> Result<Response,
     require_scope(request, next, Scope::ExcelCom).await
 }
 
+pub async fn require_ai_provider_call(request: Request, next: Next) -> Result<Response, ApiError> {
+    require_scope(request, next, Scope::AiProviderCall).await
+}
+
 async fn require_scope(request: Request, next: Next, need: Scope) -> Result<Response, ApiError> {
     let record = request
         .extensions()

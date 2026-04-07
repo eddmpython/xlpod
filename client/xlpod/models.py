@@ -69,6 +69,45 @@ class RangeData:
 
 
 @dataclass(frozen=True)
+class AISession:
+    """Logical AI session opened against the launcher.
+
+    Returned by :meth:`xlpod.AsyncClient.open_session`. The
+    ``session_id`` ties chat history, internal-bearer scopes, and
+    audit lineage together. ``granted_scopes`` is the intersection of
+    the calling user token's scopes and the AI tool registry —
+    frozen at session-open time so the model cannot escalate.
+    """
+
+    session_id: str
+    provider: str
+    model: str
+    granted_scopes: List[str]
+    opened_ms: int
+
+
+@dataclass(frozen=True)
+class ChatResponse:
+    """Result of a single :meth:`xlpod.AsyncClient.chat` call.
+
+    ``message`` is the assistant's reply (after the launcher has
+    looped through any tool calls the model emitted).
+    ``stop_reason`` indicates how the loop ended.
+    """
+
+    session_id: str
+    message: dict  # ChatMessage shape — kept loose to forward-compat
+    stop_reason: str
+    usage: dict
+
+
+@dataclass(frozen=True)
+class ProviderInfo:
+    name: str
+    has_key: bool
+
+
+@dataclass(frozen=True)
 class FileContent:
     """Result of a successful ``/fs/read`` call.
 

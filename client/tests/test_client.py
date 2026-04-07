@@ -183,6 +183,114 @@ def test_sync_client_health_round_trip() -> None:
 
 
 @pytest.mark.asyncio
+async def test_open_session_returns_dataclass() -> None:
+    transport = FakeTransport(
+        [
+            _ok({"token": "z" * 64, "granted_scopes": ["ai:provider:call"], "expires_in": 3600}),
+            _ok(
+                {
+                    "session_id": "11111111-2222-3333-4444-555555555555",
+                    "provider": "anthropic",
+                    "model": "claude-opus-4-6",
+                    "granted_scopes": ["ai:provider:call"],
+                    "opened_ms": 1234,
+                }
+            ),
+        ]
+    )
+    client = xlpod.AsyncClient(transport=transport)
+    await client.handshake(scopes=["ai:provider:call"])
+    s = await client.open_session()
+    assert isinstance(s, xlpod.AISession)
+    assert s.session_id == "11111111-2222-3333-4444-555555555555"
+    assert s.provider == "anthropic"
+    assert "ai:provider:call" in s.granted_scopes
+
+
+@pytest.mark.asyncio
+async def test_chat_returns_response_dataclass() -> None:
+    transport = FakeTransport(
+        [
+            _ok({"token": "y" * 64, "granted_scopes": ["ai:provider:call"], "expires_in": 3600}),
+            _ok(
+                {
+                    "session_id": "11111111-2222-3333-4444-555555555555",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "hello world"}],
+                    },
+                    "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 5, "output_tokens": 7},
+                }
+            ),
+        ]
+    )
+    client = xlpod.AsyncClient(transport=transport)
+    await client.handshake(scopes=["ai:provider:call"])
+    resp = await client.chat(
+        session_id="11111111-2222-3333-4444-555555555555",
+        messages=[{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+    )
+    assert isinstance(resp, xlpod.ChatResponse)
+    assert resp.stop_reason == "end_turn"
+    assert resp.message["content"][0]["text"] == "hello world"
+    assert resp.usage["output_tokens"] == 7
+
+
+@pytest.mark.asyncio
+async def test_ai_provider_unconfigured_maps_to_specific_exception() -> None:
+    transport = FakeTransport(
+        [
+            _ok({"token": "x" * 64, "granted_scopes": ["ai:provider:call"], "expires_in": 3600}),
+            _err(412, "ai_provider_unconfigured", hint="set the key first"),
+        ]
+    )
+    client = xlpod.AsyncClient(transport=transport)
+    await client.handshake(scopes=["ai:provider:call"])
+    with pytest.raises(xlpod.AIProviderUnconfigured):
+        await client.chat(
+            session_id="00000000-0000-0000-0000-000000000000",
+            messages=[],
+        )
+
+
+@pytest.mark.asyncio
+async def test_ai_tool_denied_maps_to_specific_exception() -> None:
+    transport = FakeTransport(
+        [
+            _ok({"token": "w" * 64, "granted_scopes": ["ai:provider:call"], "expires_in": 3600}),
+            _err(403, "ai_tool_denied"),
+        ]
+    )
+    client = xlpod.AsyncClient(transport=transport)
+    await client.handshake(scopes=["ai:provider:call"])
+    with pytest.raises(xlpod.AIToolDenied):
+        await client.chat(
+            session_id="00000000-0000-0000-0000-000000000000",
+            messages=[],
+        )
+
+
+@pytest.mark.asyncio
+async def test_set_provider_key_round_trip() -> None:
+    transport = FakeTransport(
+        [
+            _ok({"token": "v" * 64, "granted_scopes": ["ai:provider:call"], "expires_in": 3600}),
+            _ok({"ok": True}),
+            _ok({"providers": [{"name": "anthropic", "has_key": True}]}),
+        ]
+    )
+    client = xlpod.AsyncClient(transport=transport)
+    await client.handshake(scopes=["ai:provider:call"])
+    await client.set_provider_key(provider="anthropic", key="sk-fake")
+    providers = await client.list_providers()
+    assert providers[0].name == "anthropic"
+    assert providers[0].has_key is True
+    set_call = transport.recorded[1]
+    assert set_call.json_body == {"provider": "anthropic", "key": "sk-fake"}
+
+
+@pytest.mark.asyncio
 async def test_list_workbooks_parses_response_into_dataclasses() -> None:
     transport = FakeTransport(
         [

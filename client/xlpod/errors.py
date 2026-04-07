@@ -114,6 +114,46 @@ class ExcelFailed(XlpodError):
     """Excel COM call raised an exception."""
 
 
+class AIProviderUnconfigured(XlpodError):
+    """No API key for the requested AI provider in the launcher's keychain.
+
+    Call ``set_provider_key()`` (which prompts for user consent) and
+    retry. The launcher never echoes the key after it has been stored.
+    """
+
+
+class AIProviderUpstream(XlpodError):
+    """The AI provider returned an error to the launcher.
+
+    The launcher already redacted the upstream payload before
+    surfacing this; check the launcher audit log for the full text.
+    """
+
+
+class AIToolDenied(XlpodError):
+    """The AI internal bearer does not carry the scope this tool requires.
+
+    The user can re-open the session with a wider scope set if they
+    explicitly want the model to use the missing capability.
+    """
+
+
+class AIConsentDenied(XlpodError):
+    """The user denied the per-call consent for an AI tool.
+
+    Phase 8 prompts on every mutating tool call. Phase 9 will add
+    "trust this AI for N minutes" windows to skip the dialog.
+    """
+
+
+class AIPlanOnlyViolation(XlpodError):
+    """The model called a mutating tool while ``plan_only=True`` is set."""
+
+
+class AISessionNotFound(XlpodError):
+    """Session id is unknown to the launcher (expired or never created)."""
+
+
 _CODE_MAP: dict[str, type[XlpodError]] = {
     "origin_not_allowed": OriginNotAllowed,
     "host_not_allowed": HostNotAllowed,
@@ -133,6 +173,12 @@ _CODE_MAP: dict[str, type[XlpodError]] = {
     "excel_not_available": ExcelNotAvailable,
     "excel_not_running": ExcelNotRunning,
     "excel_failed": ExcelFailed,
+    "ai_provider_unconfigured": AIProviderUnconfigured,
+    "ai_provider_upstream": AIProviderUpstream,
+    "ai_tool_denied": AIToolDenied,
+    "ai_consent_denied": AIConsentDenied,
+    "ai_plan_only_violation": AIPlanOnlyViolation,
+    "ai_session_not_found": AISessionNotFound,
 }
 
 

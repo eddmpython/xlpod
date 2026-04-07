@@ -25,6 +25,12 @@ pub enum ApiError {
     ExcelNotAvailable,
     ExcelNotRunning,
     ExcelFailed,
+    AiProviderUnconfigured,
+    AiProviderUpstream,
+    AiToolDenied,
+    AiConsentDenied,
+    AiPlanOnlyViolation,
+    AiSessionNotFound,
     Internal,
 }
 
@@ -43,13 +49,20 @@ impl ApiError {
             | ApiError::HostNotAllowed
             | ApiError::ScopeDenied
             | ApiError::ConsentDenied
+            | ApiError::AiToolDenied
+            | ApiError::AiConsentDenied
             | ApiError::ForbiddenPath => StatusCode::FORBIDDEN,
             ApiError::Unauthorized => StatusCode::UNAUTHORIZED,
             ApiError::RateLimited => StatusCode::TOO_MANY_REQUESTS,
             ApiError::BadRequest | ApiError::ReservedScope | ApiError::PathTooLarge => {
                 StatusCode::BAD_REQUEST
             }
-            ApiError::NotAFile | ApiError::PathNotFound => StatusCode::NOT_FOUND,
+            ApiError::NotAFile | ApiError::PathNotFound | ApiError::AiSessionNotFound => {
+                StatusCode::NOT_FOUND
+            }
+            ApiError::AiProviderUnconfigured => StatusCode::PRECONDITION_FAILED,
+            ApiError::AiProviderUpstream => StatusCode::BAD_GATEWAY,
+            ApiError::AiPlanOnlyViolation => StatusCode::CONFLICT,
             ApiError::WorkerTimeout => StatusCode::GATEWAY_TIMEOUT,
             ApiError::ExcelNotAvailable | ApiError::ExcelNotRunning => {
                 StatusCode::SERVICE_UNAVAILABLE
@@ -151,6 +164,36 @@ impl ApiError {
             ApiError::ExcelFailed => ErrorBody {
                 code: "excel_failed",
                 message: "Excel COM call raised an exception",
+                hint: None,
+            },
+            ApiError::AiProviderUnconfigured => ErrorBody {
+                code: "ai_provider_unconfigured",
+                message: "no API key for the requested provider in the OS keychain",
+                hint: Some("POST /ai/providers/key with the user's consent first"),
+            },
+            ApiError::AiProviderUpstream => ErrorBody {
+                code: "ai_provider_upstream",
+                message: "the AI provider returned an error",
+                hint: None,
+            },
+            ApiError::AiToolDenied => ErrorBody {
+                code: "ai_tool_denied",
+                message: "the AI internal bearer does not carry the scope this tool requires",
+                hint: Some("widen the user's scopes at session open time"),
+            },
+            ApiError::AiConsentDenied => ErrorBody {
+                code: "ai_consent_denied",
+                message: "user denied the per-call consent for an AI tool",
+                hint: None,
+            },
+            ApiError::AiPlanOnlyViolation => ErrorBody {
+                code: "ai_plan_only_violation",
+                message: "model called a mutating tool while plan_only=true is set",
+                hint: Some("clear plan_only to apply, or accept the planned diff"),
+            },
+            ApiError::AiSessionNotFound => ErrorBody {
+                code: "ai_session_not_found",
+                message: "no session with that id (expired or never created)",
                 hint: None,
             },
             ApiError::Internal => ErrorBody {

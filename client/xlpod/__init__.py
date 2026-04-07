@@ -10,6 +10,12 @@ from __future__ import annotations
 from ._proto import DEFAULT_BASE_URL, DEFAULT_ORIGIN, PROTO
 from .client import AsyncClient, Client
 from .errors import (
+    AIConsentDenied,
+    AIPlanOnlyViolation,
+    AIProviderUnconfigured,
+    AIProviderUpstream,
+    AISessionNotFound,
+    AIToolDenied,
     BadRequest,
     ConsentDenied,
     ExcelFailed,
@@ -32,9 +38,12 @@ from .errors import (
     XlpodError,
 )
 from .models import (
+    AISession,
+    ChatResponse,
     FileContent,
     Handshake,
     Health,
+    ProviderInfo,
     RangeData,
     RunResult,
     Version,
@@ -44,8 +53,16 @@ from .models import (
 __version__ = "0.0.0"
 
 __all__ = [
+    "AIConsentDenied",
+    "AIPlanOnlyViolation",
+    "AIProviderUnconfigured",
+    "AIProviderUpstream",
+    "AISession",
+    "AISessionNotFound",
+    "AIToolDenied",
     "AsyncClient",
     "BadRequest",
+    "ChatResponse",
     "Client",
     "ConsentDenied",
     "DEFAULT_BASE_URL",
@@ -64,6 +81,7 @@ __all__ = [
     "PROTO",
     "PathNotFound",
     "PathTooLarge",
+    "ProviderInfo",
     "RangeData",
     "RateLimited",
     "ReservedScope",

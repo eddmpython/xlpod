@@ -63,6 +63,14 @@ tags:
     description: Execute Python in the launcher's worker process.
   - name: excel
     description: Drive a running Excel instance via COM (Windows only).
+  - name: ai
+    description: |
+      AI provider relay. The launcher proxies chat requests to a remote
+      provider (Anthropic in Phase 8; OpenAI / Ollama in later phases),
+      with API keys stored in the OS keychain and never echoed. Tool
+      calls the model emits are dispatched back through the launcher's
+      own routes, so the existing 5-check security stack runs on every
+      AI-driven action with no shortcut.
   - name: ws
     description: Bidirectional event channel.
 
@@ -339,6 +347,263 @@ paths:
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Error"}
+
+  /ai/chat:
+    post:
+      operationId: postAiChat
+      tags: [ai]
+      summary: Non-streaming chat completion against an AI provider.
+      description: |
+        Relays a chat completion request to the configured AI provider
+        (Phase 8 ships Anthropic only). The launcher loads the API key
+        from the OS keychain — the key never appears in the request,
+        the response, or any audit line. The model receives the
+        launcher's tool registry (see `GET /ai/tools`); when it emits
+        a `tool_use` block the launcher dispatches the call back
+        through its own routes, traversing the full 5-check stack
+        with an internal bearer minted at `POST /ai/session` time.
+
+        Mutating tool calls trigger the consent dialog *per call* in
+        Phase 8. Trust windows that skip the dialog for N minutes are
+        added in Phase 9. Streaming (`/ai/chat/stream`) is also
+        Phase 9.
+
+        Requires `ai:provider:call`. Mutating tools additionally
+        require their own scope (`fs:write`, `ai:exec:python`, etc.)
+        on the *user's* token at session-open time; the launcher
+        bakes the intersection into the AI's internal bearer.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/XXLPodProto"
+        - $ref: "#/components/parameters/XXLPodPlanOnly"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatRequest"
+      responses:
+        "200":
+          description: Chat completion (possibly after multiple internal tool turns).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatResponse"
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403":
+          description: Missing scope, or consent denied for a tool call.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+        "412":
+          description: Provider not configured (no API key in keychain).
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+        "502":
+          description: Upstream provider returned an error.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+
+  /ai/session:
+    post:
+      operationId: postAiSession
+      tags: [ai]
+      summary: Open a logical AI session.
+      description: |
+        Creates a session that ties chat history, tool intersection,
+        and audit lineage together. The session's internal bearer is
+        the intersection of the calling user token's scopes and the
+        AI tools the user has chosen to expose, computed once at
+        session open and immutable thereafter — the model cannot
+        escalate during the session.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/XXLPodProto"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                provider:
+                  type: string
+                  enum: [anthropic]
+                model:
+                  type: string
+                  examples: ["claude-opus-4-6"]
+      responses:
+        "200":
+          description: Session created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403":
+          description: Token lacks `ai:provider:call`.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+
+  /ai/session/{id}/history:
+    get:
+      operationId: getAiSessionHistory
+      tags: [ai]
+      summary: Full transcript of an AI session.
+      description: |
+        Returns the message list, tool_use blocks, and tool_result
+        blocks for a session. This is the canonical shape of the
+        `ai-history.json` payload that Phase 10 will serialize into
+        the workbook custom XML part.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/XXLPodProto"
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        "200":
+          description: Session transcript.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [session_id, messages]
+                properties:
+                  session_id: {type: string, format: uuid}
+                  messages:
+                    type: array
+                    items: {$ref: "#/components/schemas/ChatMessage"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404":
+          description: Session not found or expired.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+
+  /ai/providers:
+    get:
+      operationId: getAiProviders
+      tags: [ai]
+      summary: List configured AI providers.
+      description: |
+        Returns each known provider with a *boolean* indicating
+        whether a key is present in the OS keychain. The actual key
+        is never echoed.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/XXLPodProto"
+      responses:
+        "200":
+          description: Provider configuration status.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [providers]
+                properties:
+                  providers:
+                    type: array
+                    items: {$ref: "#/components/schemas/Provider"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+
+  /ai/providers/key:
+    post:
+      operationId: postAiProviderKey
+      tags: [ai]
+      summary: Store or replace an AI provider API key.
+      description: |
+        Writes the supplied key into the OS keychain
+        (`xlpod/{provider}_api_key`). Always opens a consent dialog
+        before writing — the user must explicitly approve granting
+        xlpod access to a paid AI account. The key is never echoed
+        on success or written to the audit log.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/XXLPodProto"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider, key]
+              properties:
+                provider: {type: string, enum: [anthropic]}
+                key:
+                  type: string
+                  format: password
+                  description: |
+                    SENSITIVE. Sent only on this single request,
+                    stored in the OS keychain, never echoed.
+      responses:
+        "200":
+          description: Key stored.
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403":
+          description: Consent denied.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+    delete:
+      operationId: deleteAiProviderKey
+      tags: [ai]
+      summary: Erase an AI provider API key from the keychain.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/XXLPodProto"
+        - name: provider
+          in: query
+          required: true
+          schema: {type: string, enum: [anthropic]}
+      responses:
+        "200":
+          description: Key erased (or already absent).
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403":
+          description: Consent denied.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+
+  /ai/tools:
+    get:
+      operationId: getAiTools
+      tags: [ai]
+      summary: List the AI tool registry.
+      description: |
+        Returns every tool the launcher will expose to a model,
+        including its JSON Schema and the underlying xlpod route.
+        This is the same registry the launcher passes to providers,
+        derived at compile time from the existing route handlers via
+        `schemars`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/XXLPodProto"
+      responses:
+        "200":
+          description: Tool registry.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tools]
+                properties:
+                  tools:
+                    type: array
+                    items: {$ref: "#/components/schemas/ToolSpec"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
 
   /launcher/version:
     get:
@@ -618,6 +883,157 @@ components:
           type: string
           description: Base64-encoded file bytes (no line wrapping).
 
+    # ---- AI bridge (Phase 8) ---------------------------------------------
+
+    Provider:
+      type: object
+      required: [name, has_key]
+      properties:
+        name:
+          type: string
+          enum: [anthropic]
+        has_key:
+          type: boolean
+          description: Whether the OS keychain currently holds a key for this provider. The actual key is never echoed.
+
+    Session:
+      type: object
+      required: [session_id, provider, model, granted_scopes, opened_ms]
+      properties:
+        session_id:
+          type: string
+          format: uuid
+        provider:
+          type: string
+          enum: [anthropic]
+        model:
+          type: string
+          examples: ["claude-opus-4-6"]
+        granted_scopes:
+          type: array
+          description: |
+            Scopes the AI's *internal bearer* carries — the
+            intersection of the calling user token's scopes and the
+            tools the user has chosen to expose. Frozen at session
+            open; the model cannot escalate.
+          items: {$ref: "#/components/schemas/Scope"}
+        opened_ms:
+          type: integer
+          description: Unix epoch milliseconds when the session was opened.
+
+    TextBlock:
+      type: object
+      required: [type, text]
+      properties:
+        type: {type: string, enum: [text]}
+        text: {type: string}
+
+    ToolUseBlock:
+      type: object
+      required: [type, id, name, input]
+      properties:
+        type: {type: string, enum: [tool_use]}
+        id: {type: string}
+        name:
+          type: string
+          description: Tool name from the launcher's tool registry.
+          examples: [fs_read, excel_workbooks, run_python]
+        input:
+          type: object
+          description: JSON arguments matching the tool's input_schema.
+
+    ToolResultBlock:
+      type: object
+      required: [type, tool_use_id, output]
+      properties:
+        type: {type: string, enum: [tool_result]}
+        tool_use_id: {type: string}
+        ok: {type: boolean}
+        output:
+          description: |
+            JSON return value from the tool's underlying route, or
+            an error envelope if the tool itself returned a 4xx/5xx.
+        approved_via:
+          type: string
+          enum: [auto, dialog, trust_window]
+          description: How the consent gate decided. Phase 8 ships only `auto` and `dialog`.
+
+    ChatMessage:
+      type: object
+      required: [role, content]
+      properties:
+        role:
+          type: string
+          enum: [system, user, assistant, tool]
+        ts_ms:
+          type: integer
+        content:
+          type: array
+          items:
+            oneOf:
+              - $ref: "#/components/schemas/TextBlock"
+              - $ref: "#/components/schemas/ToolUseBlock"
+              - $ref: "#/components/schemas/ToolResultBlock"
+
+    ToolSpec:
+      type: object
+      required: [name, description, input_schema, xlpod_route, required_scope, mutates]
+      properties:
+        name: {type: string}
+        description: {type: string}
+        input_schema:
+          type: object
+          description: JSON Schema fed to the provider, derived from the route's request struct.
+        xlpod_route:
+          type: string
+          examples: ["GET /fs/read", "POST /run/python"]
+        required_scope:
+          $ref: "#/components/schemas/Scope"
+        mutates:
+          type: boolean
+          description: True iff the tool can change state. Mutating tools always traverse the consent gate.
+
+    Usage:
+      type: object
+      required: [input_tokens, output_tokens]
+      properties:
+        input_tokens: {type: integer}
+        output_tokens: {type: integer}
+        cached_input_tokens: {type: integer}
+
+    ChatRequest:
+      type: object
+      required: [session_id, messages]
+      properties:
+        session_id:
+          type: string
+          format: uuid
+        messages:
+          type: array
+          items: {$ref: "#/components/schemas/ChatMessage"}
+        max_tokens:
+          type: integer
+          description: Provider-specific cap. Defaults to a small value to keep cost predictable.
+        plan_only:
+          type: boolean
+          default: false
+          description: Mirrors `X-XLPod-Plan-Only`. When true, mutating tools return a structured diff instead of executing.
+
+    ChatResponse:
+      type: object
+      required: [session_id, message, stop_reason]
+      properties:
+        session_id: {type: string, format: uuid}
+        message:
+          $ref: "#/components/schemas/ChatMessage"
+        stop_reason:
+          type: string
+          enum: [end_turn, max_tokens, tool_use_round_limit]
+        usage:
+          $ref: "#/components/schemas/Usage"
+
+    # ---- shared error ----------------------------------------------------
+
     Error:
       type: object
       required: [code, message]
@@ -640,6 +1056,12 @@ components:
             - "excel_not_available"
             - "excel_not_running"
             - "excel_failed"
+            - "ai_provider_unconfigured"
+            - "ai_provider_upstream"
+            - "ai_tool_denied"
+            - "ai_consent_denied"
+            - "ai_plan_only_violation"
+            - "ai_session_not_found"
         message:
           type: string
           description: Human-readable message (not localized in v0).

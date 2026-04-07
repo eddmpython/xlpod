@@ -26,9 +26,12 @@ from ._proto import (
 )
 from ._transport import Transport, TransportResponse, autodetect
 from .models import (
+    AISession,
+    ChatResponse,
     FileContent,
     Handshake,
     Health,
+    ProviderInfo,
     RangeData,
     RunResult,
     Version,
@@ -157,6 +160,92 @@ class AsyncClient:
         return RangeData(
             address=str(data.get("address", "")),
             values=normalized,
+        )
+
+    async def open_session(
+        self,
+        *,
+        provider: str = "anthropic",
+        model: Optional[str] = None,
+    ) -> AISession:
+        """Open a logical AI session against the launcher.
+
+        The returned session id ties the chat history together and
+        carries the intersection of the user token's scopes with
+        the AI tool registry. Phase 8 ships a single Anthropic
+        provider; later phases add OpenAI / Ollama.
+        """
+        body: dict[str, Any] = {"provider": provider}
+        if model is not None:
+            body["model"] = model
+        data = await self._request("POST", "/ai/session", json_body=body, auth=True)
+        return AISession(
+            session_id=str(data.get("session_id", "")),
+            provider=str(data.get("provider", provider)),
+            model=str(data.get("model", model or "")),
+            granted_scopes=list(data.get("granted_scopes", [])),
+            opened_ms=int(data.get("opened_ms", 0)),
+        )
+
+    async def chat(
+        self,
+        *,
+        session_id: str,
+        messages: list,
+        max_tokens: Optional[int] = None,
+        plan_only: bool = False,
+    ) -> ChatResponse:
+        """Send a chat completion through the launcher.
+
+        ``messages`` is a list of dicts in the launcher's
+        ``ChatMessage`` shape (``{"role": ..., "content": [...]}``);
+        for Phase 8 we keep this loose so callers building messages
+        from a notebook can pass them through unchanged.
+        """
+        body: dict[str, Any] = {
+            "session_id": session_id,
+            "messages": messages,
+            "plan_only": plan_only,
+        }
+        if max_tokens is not None:
+            body["max_tokens"] = max_tokens
+        data = await self._request("POST", "/ai/chat", json_body=body, auth=True)
+        return ChatResponse(
+            session_id=str(data.get("session_id", session_id)),
+            message=dict(data.get("message", {})),
+            stop_reason=str(data.get("stop_reason", "end_turn")),
+            usage=dict(data.get("usage", {})),
+        )
+
+    async def get_session_history(self, session_id: str) -> list:
+        """Return the full transcript for an AI session."""
+        data = await self._request(
+            "GET", f"/ai/session/{session_id}/history", auth=True
+        )
+        return list(data.get("messages", []))
+
+    async def list_providers(self) -> list[ProviderInfo]:
+        data = await self._request("GET", "/ai/providers", auth=True)
+        return [
+            ProviderInfo(name=str(p.get("name", "")), has_key=bool(p.get("has_key", False)))
+            for p in data.get("providers", [])
+        ]
+
+    async def set_provider_key(self, *, provider: str, key: str) -> None:
+        """Store an AI provider key in the launcher's keychain.
+
+        This call always opens a consent dialog on the launcher
+        side; the user must approve. The key is never echoed.
+        """
+        body = {"provider": provider, "key": key}
+        await self._request("POST", "/ai/providers/key", json_body=body, auth=True)
+
+    async def delete_provider_key(self, *, provider: str) -> None:
+        await self._request(
+            "DELETE",
+            "/ai/providers/key",
+            query={"provider": provider},
+            auth=True,
         )
 
     async def read_file(self, path: str) -> FileContent:
@@ -309,6 +398,43 @@ class Client:
         return self._run(
             self._async.read_range(workbook=workbook, sheet=sheet, range=range)
         )
+
+    def open_session(
+        self,
+        *,
+        provider: str = "anthropic",
+        model: Optional[str] = None,
+    ) -> AISession:
+        return self._run(self._async.open_session(provider=provider, model=model))
+
+    def chat(
+        self,
+        *,
+        session_id: str,
+        messages: list,
+        max_tokens: Optional[int] = None,
+        plan_only: bool = False,
+    ) -> ChatResponse:
+        return self._run(
+            self._async.chat(
+                session_id=session_id,
+                messages=messages,
+                max_tokens=max_tokens,
+                plan_only=plan_only,
+            )
+        )
+
+    def get_session_history(self, session_id: str) -> list:
+        return self._run(self._async.get_session_history(session_id))
+
+    def list_providers(self) -> list[ProviderInfo]:
+        return self._run(self._async.list_providers())
+
+    def set_provider_key(self, *, provider: str, key: str) -> None:
+        self._run(self._async.set_provider_key(provider=provider, key=key))
+
+    def delete_provider_key(self, *, provider: str) -> None:
+        self._run(self._async.delete_provider_key(provider=provider))
 
     def close(self) -> None:
         if self._loop is None:

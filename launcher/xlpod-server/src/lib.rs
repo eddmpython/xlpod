@@ -5,6 +5,7 @@
 //! consume. The binary stays a thin shell over `serve()`; everything
 //! testable lives here.
 
+pub mod ai;
 pub mod audit;
 pub mod auth;
 pub mod bind;
@@ -25,6 +26,8 @@ pub use routes::router as make_app;
 
 use std::{path::PathBuf, sync::Arc};
 
+use crate::ai::keychain::{InMemoryKeychain, Keychain};
+use crate::ai::{anthropic::AnthropicProvider, provider::ProviderRegistry, AiState};
 use crate::consent::{AutoApproveConsent, ConsentBackend};
 
 /// Inputs to `serve()` — kept as a struct so the binary and the future
@@ -34,6 +37,13 @@ pub struct ServeOptions {
     pub tls: tls::TlsPaths,
     pub audit_path: PathBuf,
     pub consent: Arc<dyn ConsentBackend>,
+    /// Keychain backend for AI provider keys. Production wires this
+    /// to `WindowsCredentialKeychain` on Windows; tests inject
+    /// `InMemoryKeychain`. Default for the standalone dev binary is
+    /// `InMemoryKeychain` so manual runs without the keychain UAC
+    /// prompt still work — keys set during a single run are dropped
+    /// at exit.
+    pub keychain: Arc<dyn Keychain>,
 }
 
 impl ServeOptions {
@@ -41,7 +51,8 @@ impl ServeOptions {
     /// reads TLS material from env or `.certs/`, audit log under
     /// `%LOCALAPPDATA%`, and `AutoApproveConsent` so manual smoke
     /// tests do not block on a dialog. The tray launcher constructs
-    /// `ServeOptions` directly with `MessageBoxConsent` instead.
+    /// `ServeOptions` directly with `MessageBoxConsent` and the
+    /// real Windows keychain instead.
     pub fn from_env() -> Self {
         Self {
             tls: tls::TlsPaths::from_env_or_default(),
@@ -49,6 +60,7 @@ impl ServeOptions {
                 .map(PathBuf::from)
                 .unwrap_or_else(config::default_audit_path),
             consent: Arc::new(AutoApproveConsent),
+            keychain: Arc::new(InMemoryKeychain::new()),
         }
     }
 }
@@ -76,10 +88,27 @@ impl std::error::Error for ServeError {}
 /// Both the standalone `xlpod-server` binary and the tray-hosted
 /// `xlpod-launcher` call this function.
 pub async fn serve(opts: ServeOptions) -> Result<(), ServeError> {
+    // Phase 8 added `reqwest` as a non-dev dependency for the
+    // Anthropic provider; by default it pulls in rustls' `ring`
+    // backend while `axum-server` uses `aws-lc-rs`. Both backends
+    // visible to a single rustls crate instance is a process-wide
+    // panic at handshake time. Pin one explicitly here, before any
+    // TLS work happens. This is best-effort: if a previous call
+    // already installed a provider in the same process the result
+    // is `Err(())`, which we deliberately ignore.
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
     let tls_config = tls::load(&opts.tls).await.map_err(ServeError::Tls)?;
     let audit_log = audit::AuditLog::open(opts.audit_path)
         .await
         .map_err(ServeError::Audit)?;
+    let mut providers = ProviderRegistry::new();
+    providers.register(Arc::new(AnthropicProvider::new(opts.keychain.clone())));
+    let ai = AiState::new(
+        Arc::new(providers),
+        opts.keychain.clone(),
+        opts.consent.clone(),
+    );
     let state = state::AppState {
         tokens: Arc::new(auth::TokenStore::new()),
         limiter: Arc::new(rate_limit::RateLimiter::new()),
@@ -87,6 +116,7 @@ pub async fn serve(opts: ServeOptions) -> Result<(), ServeError> {
         allowed_hosts: Arc::new(config::allowed_hosts().to_vec()),
         consent: opts.consent,
         worker: python_worker::PythonWorker::new(),
+        ai,
     };
     let app = make_app(state);
     let addr = bind::addr_v4();

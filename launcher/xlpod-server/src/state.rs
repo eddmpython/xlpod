@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use crate::{
-    audit::AuditLog, auth::TokenStore, consent::ConsentBackend, python_worker::PythonWorker,
-    rate_limit::RateLimiter,
+    ai::AiState, audit::AuditLog, auth::TokenStore, consent::ConsentBackend,
+    python_worker::PythonWorker, rate_limit::RateLimiter,
 };
 
 #[derive(Clone)]
@@ -25,4 +25,10 @@ pub struct AppState {
     /// the first call. See [`crate::python_worker`] for the
     /// lifecycle and timeout contract.
     pub worker: PythonWorker,
+    /// AI bridge state — provider registry, session store, keychain,
+    /// and (separately injectable) AI consent backend. Phase 8 wires
+    /// the AI consent backend to the same `ConsentBackend` the
+    /// handshake uses; Phase 9 will introduce a richer
+    /// `ConsentKind` enum so the dialog wording differs.
+    pub ai: AiState,
 }

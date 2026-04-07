@@ -21,6 +21,12 @@ use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    ai::{
+        dispatch::{self, DispatchCtx},
+        provider::ProviderError,
+        tools as ai_tools,
+        types::{ChatMessage, ChatRequest, ChatResponse, ContentBlock, Role, StopReason, Usage},
+    },
     auth::Scope,
     bind::{LAUNCHER_VERSION, PROTO},
     config::TOKEN_TTL_SECS,
@@ -28,8 +34,8 @@ use crate::{
     error::ApiError,
     fs_read::{canonicalize_roots, read_under_roots},
     middleware::{
-        audit_wrap, bearer_guard, host_guard, origin_guard, require_excel_com, require_fs_read,
-        require_run_python, TokenRecordExt,
+        audit_wrap, bearer_guard, host_guard, origin_guard, require_ai_provider_call,
+        require_excel_com, require_fs_read, require_run_python, TokenRecordExt,
     },
     python_worker::ExecResult,
     state::AppState,
@@ -74,6 +80,11 @@ async fn handshake(
     headers: HeaderMap,
     Json(body): Json<HandshakeRequest>,
 ) -> Result<Json<HandshakeResponse>, ApiError> {
+    // Phase 8: ai:* scopes are no longer reserved. The handshake
+    // accepts them and the consent dialog (Phase 4 mechanism) is what
+    // actually gates access. The `is_reserved` helper now returns
+    // false for every Scope, but the call site is preserved so a
+    // future scope re-marking is one-line.
     if body.requested_scopes.iter().any(|s| s.is_reserved()) {
         return Err(ApiError::ReservedScope);
     }
@@ -235,6 +246,288 @@ async fn excel_range_read(
     })))
 }
 
+// ---- /ai/* ----------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct OpenSessionRequest {
+    #[serde(default)]
+    provider: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
+}
+
+#[derive(Serialize)]
+struct OpenSessionResponse {
+    session_id: String,
+    provider: String,
+    model: String,
+    granted_scopes: Vec<Scope>,
+    opened_ms: u128,
+}
+
+async fn ai_open_session(
+    State(state): State<AppState>,
+    Extension(token): Extension<TokenRecordExt>,
+    Json(body): Json<OpenSessionRequest>,
+) -> Result<Json<OpenSessionResponse>, ApiError> {
+    let provider = body.provider.unwrap_or_else(|| "anthropic".to_string());
+    let model = body
+        .model
+        .unwrap_or_else(|| crate::ai::anthropic::DEFAULT_MODEL.to_string());
+
+    // Intersection: the AI's "internal bearer scopes" are the
+    // user's token scopes restricted to the ones a tool registry
+    // entry requires. The model never gains scopes the user did not
+    // hold.
+    let user_scopes: Vec<Scope> = token.0.scopes.clone();
+    let registry = ai_tools::builtin_tools();
+    let mut granted: Vec<Scope> = registry
+        .iter()
+        .map(|t| t.required_scope)
+        .filter(|s| user_scopes.contains(s))
+        .collect();
+    granted.sort_by_key(|s| format!("{s:?}"));
+    granted.dedup();
+
+    // Phase 8: the internal bearer is the same token id as the user
+    // token (we do not mint a separate token store entry yet — that
+    // is a clean refactor for Phase 9 once trust windows arrive).
+    let session = state.ai.sessions.open(
+        provider.clone(),
+        model.clone(),
+        "internal".to_string(),
+        granted.clone(),
+        token.0.fs_roots.clone(),
+    );
+
+    Ok(Json(OpenSessionResponse {
+        session_id: session.id.to_string(),
+        provider,
+        model,
+        granted_scopes: granted,
+        opened_ms: session.opened_ms,
+    }))
+}
+
+async fn ai_chat(
+    State(state): State<AppState>,
+    Json(body): Json<ChatRequest>,
+) -> Result<Json<ChatResponse>, ApiError> {
+    let session = state.ai.sessions.get(body.session_id)?;
+
+    let provider = state
+        .ai
+        .providers
+        .get(&session.provider)
+        .ok_or(ApiError::AiProviderUnconfigured)?;
+
+    let tools = ai_tools::builtin_tools();
+
+    // Append the new user messages to the session before calling
+    // the provider, so the transcript is the full multi-turn flow.
+    state
+        .ai
+        .sessions
+        .append_messages(session.id, body.messages.clone())?;
+
+    let mut history = state.ai.sessions.get(session.id)?.messages.clone();
+    let mut final_message = ChatMessage {
+        role: Role::Assistant,
+        ts_ms: None,
+        content: vec![],
+    };
+    let mut final_stop = StopReason::EndTurn;
+    let mut final_usage = Usage::default();
+
+    // Phase 8: bounded tool-use loop. Cap at 8 round trips so a
+    // confused model can't pin the worker forever.
+    const MAX_TURNS: usize = 8;
+    for _ in 0..MAX_TURNS {
+        let turn = provider
+            .chat(&history, &tools, body.max_tokens)
+            .await
+            .map_err(|e| match e {
+                ProviderError::Unconfigured => ApiError::AiProviderUnconfigured,
+                _ => ApiError::AiProviderUpstream,
+            })?;
+
+        let assistant_message = turn.message.clone();
+        history.push(assistant_message.clone());
+        state
+            .ai
+            .sessions
+            .append_messages(session.id, vec![assistant_message.clone()])?;
+
+        // Find any tool_use blocks the model emitted; dispatch each
+        // and feed the results back as a `tool` role message.
+        let tool_uses: Vec<(String, String, serde_json::Value)> = assistant_message
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::ToolUse { id, name, input } => {
+                    Some((id.clone(), name.clone(), input.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+
+        if tool_uses.is_empty() {
+            final_message = assistant_message;
+            final_stop = turn.stop_reason;
+            final_usage = turn.usage;
+            break;
+        }
+
+        let ctx = DispatchCtx {
+            state: &state,
+            ai_consent: &state.ai.consent,
+            session: &session,
+            plan_only: body.plan_only,
+        };
+        let mut tool_results = Vec::new();
+        for (tu_id, name, input) in tool_uses {
+            let result = dispatch::execute_tool_use(&ctx, &tu_id, &name, &input).await;
+            tool_results.push(result);
+        }
+        let tool_message = ChatMessage {
+            role: Role::Tool,
+            ts_ms: None,
+            content: tool_results,
+        };
+        history.push(tool_message.clone());
+        state
+            .ai
+            .sessions
+            .append_messages(session.id, vec![tool_message])?;
+        final_stop = turn.stop_reason;
+        final_usage = turn.usage;
+    }
+
+    Ok(Json(ChatResponse {
+        session_id: session.id,
+        message: final_message,
+        stop_reason: final_stop,
+        usage: final_usage,
+    }))
+}
+
+#[derive(Serialize)]
+struct ProviderStatus {
+    name: String,
+    has_key: bool,
+}
+
+#[derive(Serialize)]
+struct ProvidersResponse {
+    providers: Vec<ProviderStatus>,
+}
+
+async fn ai_list_providers(
+    State(state): State<AppState>,
+) -> Result<Json<ProvidersResponse>, ApiError> {
+    let providers = vec![ProviderStatus {
+        name: "anthropic".to_string(),
+        has_key: state
+            .ai
+            .keychain
+            .read("anthropic_api_key")
+            .map(|v| v.is_some())
+            .unwrap_or(false),
+    }];
+    Ok(Json(ProvidersResponse { providers }))
+}
+
+#[derive(Deserialize)]
+struct SetKeyRequest {
+    provider: String,
+    key: String,
+}
+
+async fn ai_set_provider_key(
+    State(state): State<AppState>,
+    Json(body): Json<SetKeyRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if body.provider != "anthropic" {
+        return Err(ApiError::BadRequest);
+    }
+    let approved = state
+        .ai
+        .consent
+        .request(ConsentRequest {
+            origin: format!("ai-key://{}", body.provider),
+            scopes: vec![],
+            fs_roots: vec![],
+        })
+        .await;
+    if !approved {
+        return Err(ApiError::ConsentDenied);
+    }
+    state
+        .ai
+        .keychain
+        .write(&format!("{}_api_key", body.provider), &body.key)
+        .map_err(|_| ApiError::Internal)?;
+    Ok(Json(serde_json::json!({"ok": true})))
+}
+
+#[derive(Deserialize)]
+struct DeleteKeyParams {
+    provider: String,
+}
+
+async fn ai_delete_provider_key(
+    State(state): State<AppState>,
+    axum::extract::Query(params): axum::extract::Query<DeleteKeyParams>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let approved = state
+        .ai
+        .consent
+        .request(ConsentRequest {
+            origin: format!("ai-key-delete://{}", params.provider),
+            scopes: vec![],
+            fs_roots: vec![],
+        })
+        .await;
+    if !approved {
+        return Err(ApiError::ConsentDenied);
+    }
+    state
+        .ai
+        .keychain
+        .delete(&format!("{}_api_key", params.provider))
+        .map_err(|_| ApiError::Internal)?;
+    Ok(Json(serde_json::json!({"ok": true})))
+}
+
+#[derive(Serialize)]
+struct ToolsResponse {
+    tools: Vec<crate::ai::types::ToolSpec>,
+}
+
+async fn ai_list_tools() -> Json<ToolsResponse> {
+    Json(ToolsResponse {
+        tools: ai_tools::builtin_tools(),
+    })
+}
+
+#[derive(Serialize)]
+struct SessionHistoryResponse {
+    session_id: String,
+    messages: Vec<ChatMessage>,
+}
+
+async fn ai_session_history(
+    State(state): State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<Json<SessionHistoryResponse>, ApiError> {
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|_| ApiError::BadRequest)?;
+    let session = state.ai.sessions.get(uuid)?;
+    Ok(Json(SessionHistoryResponse {
+        session_id: session.id.to_string(),
+        messages: session.messages,
+    }))
+}
+
 // ---- /ws ------------------------------------------------------------------
 
 async fn ws_upgrade(
@@ -313,6 +606,25 @@ pub fn router(state: AppState) -> Router {
         .route_layer(from_fn(origin_guard))
         .route_layer(from_fn_with_state(state.clone(), host_guard));
 
+    // /ai/*: requires ai:provider:call. Tool dispatch inside the
+    // chat handler additionally checks per-tool scopes against the
+    // session's intersection.
+    let ai = Router::new()
+        .route("/ai/chat", post(ai_chat))
+        .route("/ai/session", post(ai_open_session))
+        .route("/ai/session/:id/history", get(ai_session_history))
+        .route("/ai/providers", get(ai_list_providers))
+        .route("/ai/providers/key", post(ai_set_provider_key))
+        .route(
+            "/ai/providers/key",
+            axum::routing::delete(ai_delete_provider_key),
+        )
+        .route("/ai/tools", get(ai_list_tools))
+        .route_layer(from_fn(require_ai_provider_call))
+        .route_layer(from_fn_with_state(state.clone(), bearer_guard))
+        .route_layer(from_fn(origin_guard))
+        .route_layer(from_fn_with_state(state.clone(), host_guard));
+
     Router::new()
         .merge(public_open)
         .merge(public_origin)
@@ -320,6 +632,7 @@ pub fn router(state: AppState) -> Router {
         .merge(fs)
         .merge(run)
         .merge(excel)
+        .merge(ai)
         .layer(from_fn_with_state(state.clone(), audit_wrap))
         .with_state(state)
 }

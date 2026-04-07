@@ -248,6 +248,33 @@ class AsyncClient:
             auth=True,
         )
 
+    async def get_cost_today(self) -> dict:
+        """Return today's AI usage rollup (Phase 9).
+
+        Cost is reported as integer micro-USD; divide by 1_000_000
+        for dollars.
+        """
+        return await self._request("GET", "/ai/cost/today", auth=True)
+
+    async def open_trust_window(
+        self,
+        *,
+        session_id: str,
+        tools: list,
+        duration_secs: int,
+    ) -> dict:
+        """Open a trust window so the launcher skips per-call consent
+        for the named tools for ``duration_secs`` seconds.
+        """
+        body = {
+            "session_id": session_id,
+            "tools": list(tools),
+            "duration_secs": int(duration_secs),
+        }
+        return await self._request(
+            "POST", "/ai/consent/window", json_body=body, auth=True
+        )
+
     async def read_file(self, path: str) -> FileContent:
         """Read a file under one of the token's approved fs roots.
 
@@ -435,6 +462,24 @@ class Client:
 
     def delete_provider_key(self, *, provider: str) -> None:
         self._run(self._async.delete_provider_key(provider=provider))
+
+    def get_cost_today(self) -> dict:
+        return self._run(self._async.get_cost_today())
+
+    def open_trust_window(
+        self,
+        *,
+        session_id: str,
+        tools: list,
+        duration_secs: int,
+    ) -> dict:
+        return self._run(
+            self._async.open_trust_window(
+                session_id=session_id,
+                tools=tools,
+                duration_secs=duration_secs,
+            )
+        )
 
     def close(self) -> None:
         if self._loop is None:

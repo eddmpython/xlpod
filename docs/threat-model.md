@@ -223,6 +223,31 @@ New surface introduced after the initial draft and the threats it brings:
   in-flight chat request is blocked, never the launcher's other
   consumers.
 
+### From Phase 9 (cost ledger + trust windows)
+
+- **T47 (cost ledger tampering)**: a process running as the user
+  edits `cost.jsonl` to hide spend. **Mitigation**: the file is
+  open-append-only from the launcher's side and the in-memory
+  rollup is rebuilt only at launcher start, so post-launch edits
+  don't change the running budget. A future revision will hash-
+  chain entries so post-hoc edits are detectable.
+
+- **T48 (trust window abuse — too long, too broad)**: user opens
+  a 24-hour window covering every tool and forgets about it.
+  **Mitigation**: `MAX_DURATION_SECS = 3600` enforces a 1-hour
+  hard cap; the consent dialog body lists every tool name and the
+  exact duration in the window string. Future revisions will add
+  a tray-status indicator showing live windows so the user can
+  revoke at a glance.
+
+- **T49 (budget cap bypass via in-flight chat)**: a chat already
+  in flight when the cap is hit completes anyway because the
+  budget check runs at request entry. **Accepted residual risk**:
+  killing an in-flight stream produces worse UX than a 0.5%
+  overshoot, and the cap default ($5/day) is small enough that
+  the overshoot is negligible. Documented; alternative is a
+  per-tool kill switch in Phase 11+.
+
 ### From Phase 6 (`/excel/*` COM routes)
 - **T38.** A token with `excel:com` reads or modifies any workbook
   the user has open, not just the one the caller "meant". The launcher

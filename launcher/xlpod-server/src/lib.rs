@@ -26,6 +26,7 @@ pub use routes::router as make_app;
 
 use std::{path::PathBuf, sync::Arc};
 
+use crate::ai::cost::{CostLedger, DEFAULT_DAILY_BUDGET_MICROS};
 use crate::ai::keychain::{InMemoryKeychain, Keychain};
 use crate::ai::{anthropic::AnthropicProvider, provider::ProviderRegistry, AiState};
 use crate::consent::{AutoApproveConsent, ConsentBackend};
@@ -44,6 +45,13 @@ pub struct ServeOptions {
     /// prompt still work — keys set during a single run are dropped
     /// at exit.
     pub keychain: Arc<dyn Keychain>,
+    /// Path to the AI cost ledger JSONL file. Default lives next to
+    /// the audit log under `%LOCALAPPDATA%/xlpod/cost.jsonl`.
+    pub cost_path: PathBuf,
+    /// Daily AI spend cap in micro-USD ($5/day default). Set to 0
+    /// to disable. The launcher reads `XLPOD_DAILY_BUDGET_MICROS`
+    /// from env and falls back to this.
+    pub daily_budget_micros: u64,
 }
 
 impl ServeOptions {
@@ -54,13 +62,28 @@ impl ServeOptions {
     /// `ServeOptions` directly with `MessageBoxConsent` and the
     /// real Windows keychain instead.
     pub fn from_env() -> Self {
+        let audit_path = std::env::var_os("XLPOD_AUDIT_PATH")
+            .map(PathBuf::from)
+            .unwrap_or_else(config::default_audit_path);
+        let cost_path = std::env::var_os("XLPOD_COST_PATH")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                audit_path
+                    .parent()
+                    .map(|p| p.join("cost.jsonl"))
+                    .unwrap_or_else(|| PathBuf::from("cost.jsonl"))
+            });
+        let daily_budget_micros = std::env::var("XLPOD_DAILY_BUDGET_MICROS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(DEFAULT_DAILY_BUDGET_MICROS);
         Self {
             tls: tls::TlsPaths::from_env_or_default(),
-            audit_path: std::env::var_os("XLPOD_AUDIT_PATH")
-                .map(PathBuf::from)
-                .unwrap_or_else(config::default_audit_path),
+            audit_path,
             consent: Arc::new(AutoApproveConsent),
             keychain: Arc::new(InMemoryKeychain::new()),
+            cost_path,
+            daily_budget_micros,
         }
     }
 }
@@ -104,10 +127,14 @@ pub async fn serve(opts: ServeOptions) -> Result<(), ServeError> {
         .map_err(ServeError::Audit)?;
     let mut providers = ProviderRegistry::new();
     providers.register(Arc::new(AnthropicProvider::new(opts.keychain.clone())));
+    let cost_ledger = CostLedger::open(opts.cost_path.clone(), opts.daily_budget_micros)
+        .await
+        .map_err(ServeError::Audit)?;
     let ai = AiState::new(
         Arc::new(providers),
         opts.keychain.clone(),
         opts.consent.clone(),
+        cost_ledger,
     );
     let state = state::AppState {
         tokens: Arc::new(auth::TokenStore::new()),

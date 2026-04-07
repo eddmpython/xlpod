@@ -272,6 +272,53 @@ async def test_ai_tool_denied_maps_to_specific_exception() -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_cost_today_returns_dict() -> None:
+    transport = FakeTransport(
+        [
+            _ok({"token": "u" * 64, "granted_scopes": ["ai:provider:call"], "expires_in": 3600}),
+            _ok({"date": "2026-04-08", "total_usd_micros": 12345, "by_model": []}),
+        ]
+    )
+    client = xlpod.AsyncClient(transport=transport)
+    await client.handshake(scopes=["ai:provider:call"])
+    rollup = await client.get_cost_today()
+    assert rollup["total_usd_micros"] == 12345
+    assert rollup["date"] == "2026-04-08"
+
+
+@pytest.mark.asyncio
+async def test_open_trust_window_round_trip() -> None:
+    transport = FakeTransport(
+        [
+            _ok({"token": "t" * 64, "granted_scopes": ["ai:provider:call"], "expires_in": 3600}),
+            _ok(
+                {
+                    "id": "11111111-1111-1111-1111-111111111111",
+                    "session_id": "22222222-2222-2222-2222-222222222222",
+                    "tools": ["run_python"],
+                    "expires_ms": 9999999999,
+                }
+            ),
+        ]
+    )
+    client = xlpod.AsyncClient(transport=transport)
+    await client.handshake(scopes=["ai:provider:call"])
+    win = await client.open_trust_window(
+        session_id="22222222-2222-2222-2222-222222222222",
+        tools=["run_python"],
+        duration_secs=600,
+    )
+    assert win["tools"] == ["run_python"]
+    assert win["expires_ms"] == 9999999999
+    open_call = transport.recorded[1]
+    assert open_call.json_body == {
+        "session_id": "22222222-2222-2222-2222-222222222222",
+        "tools": ["run_python"],
+        "duration_secs": 600,
+    }
+
+
+@pytest.mark.asyncio
 async def test_set_provider_key_round_trip() -> None:
     transport = FakeTransport(
         [

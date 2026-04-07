@@ -29,6 +29,7 @@ use serde_json::{json, Value};
 
 use crate::ai::session::Session;
 use crate::ai::tools;
+use crate::ai::trust_window::TrustWindowStore;
 use crate::ai::types::{ApprovedVia, ContentBlock};
 use crate::auth::Scope;
 use crate::consent::{ConsentBackend, ConsentRequest};
@@ -40,6 +41,7 @@ use crate::state::AppState;
 pub struct DispatchCtx<'a> {
     pub state: &'a AppState,
     pub ai_consent: &'a Arc<dyn ConsentBackend>,
+    pub trust_windows: &'a TrustWindowStore,
     pub session: &'a Session,
     pub plan_only: bool,
 }
@@ -89,16 +91,24 @@ async fn run_one(
         if ctx.plan_only {
             return Err(ApiError::AiPlanOnlyViolation);
         }
-        let req = ConsentRequest {
-            origin: format!("ai://{}/{}", ctx.session.provider, ctx.session.id),
-            scopes: vec![spec.required_scope],
-            fs_roots: vec![],
-        };
-        let ok = ctx.ai_consent.request(req).await;
-        if !ok {
-            return Err(ApiError::AiConsentDenied);
+        // Trust window first — if the user already approved this
+        // tool for this session, skip the per-call dialog. Audit
+        // still records the call (the audit middleware runs around
+        // the route, and the route in turn called dispatch).
+        if ctx.trust_windows.covers(ctx.session.id, name) {
+            ApprovedVia::TrustWindow
+        } else {
+            let req = ConsentRequest {
+                origin: format!("ai://{}/{}", ctx.session.provider, ctx.session.id),
+                scopes: vec![spec.required_scope],
+                fs_roots: vec![],
+            };
+            let ok = ctx.ai_consent.request(req).await;
+            if !ok {
+                return Err(ApiError::AiConsentDenied);
+            }
+            ApprovedVia::Dialog
         }
-        ApprovedVia::Dialog
     } else {
         ApprovedVia::Auto
     };

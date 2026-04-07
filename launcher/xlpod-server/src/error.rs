@@ -31,6 +31,8 @@ pub enum ApiError {
     AiConsentDenied,
     AiPlanOnlyViolation,
     AiSessionNotFound,
+    AiTrustWindowExpired,
+    AiBudgetExceeded,
     Internal,
 }
 
@@ -51,9 +53,10 @@ impl ApiError {
             | ApiError::ConsentDenied
             | ApiError::AiToolDenied
             | ApiError::AiConsentDenied
+            | ApiError::AiTrustWindowExpired
             | ApiError::ForbiddenPath => StatusCode::FORBIDDEN,
             ApiError::Unauthorized => StatusCode::UNAUTHORIZED,
-            ApiError::RateLimited => StatusCode::TOO_MANY_REQUESTS,
+            ApiError::RateLimited | ApiError::AiBudgetExceeded => StatusCode::TOO_MANY_REQUESTS,
             ApiError::BadRequest | ApiError::ReservedScope | ApiError::PathTooLarge => {
                 StatusCode::BAD_REQUEST
             }
@@ -195,6 +198,16 @@ impl ApiError {
                 code: "ai_session_not_found",
                 message: "no session with that id (expired or never created)",
                 hint: None,
+            },
+            ApiError::AiTrustWindowExpired => ErrorBody {
+                code: "ai_trust_window_expired",
+                message: "the trust window has expired or was revoked",
+                hint: Some("open a new window via POST /ai/consent/window"),
+            },
+            ApiError::AiBudgetExceeded => ErrorBody {
+                code: "ai_budget_exceeded",
+                message: "today's AI spend cap has been hit",
+                hint: Some("raise XLPOD_DAILY_BUDGET_MICROS or wait until tomorrow"),
             },
             ApiError::Internal => ErrorBody {
                 code: "internal",

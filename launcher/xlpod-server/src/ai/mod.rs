@@ -33,11 +33,13 @@
 //!   asks every time, Phase 9 adds trust windows.
 
 pub mod anthropic;
+pub mod cost;
 pub mod dispatch;
 pub mod keychain;
 pub mod provider;
 pub mod session;
 pub mod tools;
+pub mod trust_window;
 pub mod types;
 
 use std::sync::Arc;
@@ -50,6 +52,8 @@ pub struct AiState {
     pub sessions: Arc<session::SessionStore>,
     pub keychain: Arc<dyn keychain::Keychain>,
     pub consent: Arc<dyn ConsentBackend>,
+    pub cost: cost::CostLedger,
+    pub trust_windows: Arc<trust_window::TrustWindowStore>,
 }
 
 impl AiState {
@@ -57,12 +61,15 @@ impl AiState {
         providers: Arc<provider::ProviderRegistry>,
         keychain: Arc<dyn keychain::Keychain>,
         consent: Arc<dyn ConsentBackend>,
+        cost: cost::CostLedger,
     ) -> Self {
         Self {
             providers,
             sessions: Arc::new(session::SessionStore::new()),
             keychain,
             consent,
+            cost,
+            trust_windows: Arc::new(trust_window::TrustWindowStore::new()),
         }
     }
 }

@@ -313,6 +313,9 @@ async fn ai_chat(
     State(state): State<AppState>,
     Json(body): Json<ChatRequest>,
 ) -> Result<Json<ChatResponse>, ApiError> {
+    if state.ai.cost.over_budget() {
+        return Err(ApiError::AiBudgetExceeded);
+    }
     let session = state.ai.sessions.get(body.session_id)?;
 
     let provider = state
@@ -371,6 +374,15 @@ async fn ai_chat(
             })
             .collect();
 
+        // Record cost on every provider turn (Phase 9). Failures
+        // here do not break the chat — the worst case is a missing
+        // ledger line that the next call replaces.
+        let _ = state
+            .ai
+            .cost
+            .record(&session.provider, &session.model, &turn.usage)
+            .await;
+
         if tool_uses.is_empty() {
             final_message = assistant_message;
             final_stop = turn.stop_reason;
@@ -381,6 +393,7 @@ async fn ai_chat(
         let ctx = DispatchCtx {
             state: &state,
             ai_consent: &state.ai.consent,
+            trust_windows: &state.ai.trust_windows,
             session: &session,
             plan_only: body.plan_only,
         };
@@ -528,6 +541,47 @@ async fn ai_session_history(
     }))
 }
 
+async fn ai_cost_today(State(state): State<AppState>) -> Json<crate::ai::cost::CostRollup> {
+    Json(state.ai.cost.rollup())
+}
+
+#[derive(Deserialize)]
+struct OpenTrustWindowRequest {
+    session_id: String,
+    tools: Vec<String>,
+    duration_secs: u64,
+}
+
+async fn ai_open_trust_window(
+    State(state): State<AppState>,
+    Json(body): Json<OpenTrustWindowRequest>,
+) -> Result<Json<crate::ai::trust_window::TrustWindow>, ApiError> {
+    let session_id = uuid::Uuid::parse_str(&body.session_id).map_err(|_| ApiError::BadRequest)?;
+    // Confirm session exists before bothering the user with a dialog.
+    let _ = state.ai.sessions.get(session_id)?;
+    let approved = state
+        .ai
+        .consent
+        .request(ConsentRequest {
+            origin: format!(
+                "ai-trust://{}?{}s",
+                body.tools.join(","),
+                body.duration_secs
+            ),
+            scopes: vec![],
+            fs_roots: vec![],
+        })
+        .await;
+    if !approved {
+        return Err(ApiError::AiConsentDenied);
+    }
+    let win = state
+        .ai
+        .trust_windows
+        .open(session_id, body.tools, body.duration_secs);
+    Ok(Json(win))
+}
+
 // ---- /ws ------------------------------------------------------------------
 
 async fn ws_upgrade(
@@ -620,6 +674,8 @@ pub fn router(state: AppState) -> Router {
             axum::routing::delete(ai_delete_provider_key),
         )
         .route("/ai/tools", get(ai_list_tools))
+        .route("/ai/cost/today", get(ai_cost_today))
+        .route("/ai/consent/window", post(ai_open_trust_window))
         .route_layer(from_fn(require_ai_provider_call))
         .route_layer(from_fn_with_state(state.clone(), bearer_guard))
         .route_layer(from_fn(origin_guard))

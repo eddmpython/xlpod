@@ -576,6 +576,69 @@ paths:
             application/json:
               schema: {$ref: "#/components/schemas/Error"}
 
+  /ai/cost/today:
+    get:
+      operationId: getAiCostToday
+      tags: [ai]
+      summary: Today's AI usage rollup.
+      description: |
+        Returns the per-provider+model token + cost rollup for today
+        (UTC). Cost is reported as integer micro-USD to avoid float
+        drift; clients divide by 1_000_000 for dollars. The rollup
+        is loaded at launcher start by replaying today's lines from
+        the cost ledger (`%LOCALAPPDATA%/xlpod/cost.jsonl`); each AI
+        call appends one line.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/XXLPodProto"
+      responses:
+        "200":
+          description: Today's rollup.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CostRollup"
+        "401": {$ref: "#/components/responses/Unauthorized"}
+
+  /ai/consent/window:
+    post:
+      operationId: postAiConsentWindow
+      tags: [ai]
+      summary: Open a "trust this AI for N minutes" window.
+      description: |
+        Phase 8 prompts on every mutating tool call, which is safe
+        but noisy for a multi-step session. A trust window opens a
+        single consent dialog up front asking the user to approve a
+        named tool set for a bounded time; once approved, dispatch
+        skips the per-call dialog for those tools (audit still
+        records every call). The window auto-revokes on session
+        close, on token expiry, and on any `ai_provider_upstream`
+        5xx (defense against hijacked sessions).
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/XXLPodProto"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TrustWindowRequest"
+      responses:
+        "200":
+          description: Window opened.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrustWindow"
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403":
+          description: User denied consent.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+
   /ai/tools:
     get:
       operationId: getAiTools
@@ -1031,6 +1094,61 @@ components:
           enum: [end_turn, max_tokens, tool_use_round_limit]
         usage:
           $ref: "#/components/schemas/Usage"
+        cost_usd_micros:
+          type: integer
+          description: Cost of this exchange in micro-USD (Phase 9).
+
+    CostEntry:
+      type: object
+      required: [provider, model, input_tokens, output_tokens, usd_micros]
+      properties:
+        provider: {type: string}
+        model: {type: string}
+        input_tokens: {type: integer}
+        output_tokens: {type: integer}
+        usd_micros:
+          type: integer
+          description: Integer micro-USD; divide by 1_000_000 for dollars.
+
+    CostRollup:
+      type: object
+      required: [date, total_usd_micros, by_model]
+      properties:
+        date:
+          type: string
+          description: ISO 8601 date the rollup covers.
+        total_usd_micros:
+          type: integer
+        by_model:
+          type: array
+          items: {$ref: "#/components/schemas/CostEntry"}
+
+    TrustWindowRequest:
+      type: object
+      required: [session_id, tools, duration_secs]
+      properties:
+        session_id: {type: string, format: uuid}
+        tools:
+          type: array
+          items: {type: string}
+          description: Tool names that this window covers.
+          examples: [["excel_range_read", "run_python"]]
+        duration_secs:
+          type: integer
+          description: How long the window stays open (max 3600 in Phase 9).
+
+    TrustWindow:
+      type: object
+      required: [id, session_id, tools, expires_ms]
+      properties:
+        id: {type: string, format: uuid}
+        session_id: {type: string, format: uuid}
+        tools:
+          type: array
+          items: {type: string}
+        expires_ms:
+          type: integer
+          description: Unix epoch milliseconds when the window expires.
 
     # ---- shared error ----------------------------------------------------
 
@@ -1062,6 +1180,8 @@ components:
             - "ai_consent_denied"
             - "ai_plan_only_violation"
             - "ai_session_not_found"
+            - "ai_trust_window_expired"
+            - "ai_budget_exceeded"
         message:
           type: string
           description: Human-readable message (not localized in v0).

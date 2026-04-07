@@ -150,6 +150,14 @@ pub async fn require_ai_provider_call(request: Request, next: Next) -> Result<Re
     require_scope(request, next, Scope::AiProviderCall).await
 }
 
+pub async fn require_bundle_read(request: Request, next: Next) -> Result<Response, ApiError> {
+    require_scope(request, next, Scope::BundleRead).await
+}
+
+pub async fn require_bundle_write(request: Request, next: Next) -> Result<Response, ApiError> {
+    require_scope(request, next, Scope::BundleWrite).await
+}
+
 async fn require_scope(request: Request, next: Next, need: Scope) -> Result<Response, ApiError> {
     let record = request
         .extensions()

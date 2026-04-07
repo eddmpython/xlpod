@@ -208,15 +208,35 @@ async fn spawn_worker() -> Result<WorkerInner, ApiError> {
 }
 
 async fn try_spawn(python: &str) -> Result<WorkerInner, ()> {
-    let mut child = match Command::new(python)
-        .arg("-c")
+    // Phase 11: tell the worker where the xlpod client package
+    // lives so its bundle_read / bundle_write methods can `import
+    // xlpod.bundle`. The launcher honours an explicit override
+    // first; otherwise it tries the repo-relative path
+    // (`<repo>/client`) so dev runs from `cargo run` find it.
+    let mut cmd = Command::new(python);
+    cmd.arg("-c")
         .arg(WORKER_SOURCE)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .kill_on_drop(true)
-        .spawn()
-    {
+        .kill_on_drop(true);
+    if let Ok(custom) = std::env::var("XLPOD_CLIENT_PATH") {
+        if !custom.is_empty() {
+            cmd.env("XLPOD_CLIENT_PATH", custom);
+        }
+    } else {
+        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let candidate = manifest_dir
+            .parent()
+            .and_then(|p| p.parent())
+            .map(|p| p.join("client"));
+        if let Some(client_dir) = candidate {
+            if client_dir.exists() {
+                cmd.env("XLPOD_CLIENT_PATH", client_dir);
+            }
+        }
+    }
+    let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(_) => return Err(()),
     };

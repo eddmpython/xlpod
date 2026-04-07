@@ -39,6 +39,10 @@ pub enum Scope {
     AiCodegenWrite,
     #[serde(rename = "ai:exec:python")]
     AiExecPython,
+    #[serde(rename = "bundle:read")]
+    BundleRead,
+    #[serde(rename = "bundle:write")]
+    BundleWrite,
 }
 
 impl Scope {

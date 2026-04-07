@@ -35,7 +35,8 @@ use crate::{
     fs_read::{canonicalize_roots, read_under_roots},
     middleware::{
         audit_wrap, bearer_guard, host_guard, origin_guard, require_ai_provider_call,
-        require_excel_com, require_fs_read, require_run_python, TokenRecordExt,
+        require_bundle_read, require_bundle_write, require_excel_com, require_fs_read,
+        require_run_python, TokenRecordExt,
     },
     python_worker::ExecResult,
     state::AppState,
@@ -244,6 +245,113 @@ async fn excel_range_read(
         "address": address,
         "values": values,
     })))
+}
+
+// ---- /bundle/* ------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct BundlePathRequest {
+    path: String,
+}
+
+#[derive(Deserialize)]
+struct BundleWriteRequest {
+    path: String,
+    payload: serde_json::Value,
+}
+
+fn ensure_path_under_roots(
+    requested: &str,
+    token: &TokenRecordExt,
+) -> Result<std::path::PathBuf, ApiError> {
+    let canon = std::fs::canonicalize(requested).map_err(|_| ApiError::PathNotFound)?;
+    if !token.0.fs_roots.iter().any(|root| canon.starts_with(root)) {
+        return Err(ApiError::ForbiddenPath);
+    }
+    Ok(canon)
+}
+
+fn map_worker_bundle_error(error_code: &str) -> ApiError {
+    match error_code {
+        "bundle_not_found" => ApiError::BundleNotFound,
+        "bundle_too_large" => ApiError::BundleTooLarge,
+        "bundle_corrupt" => ApiError::BundleCorrupt,
+        "bundle_schema_mismatch" => ApiError::BundleSchemaMismatch,
+        "path_not_found" => ApiError::PathNotFound,
+        _ => ApiError::Internal,
+    }
+}
+
+async fn bundle_read_route(
+    State(state): State<AppState>,
+    Extension(token): Extension<TokenRecordExt>,
+    Json(body): Json<BundlePathRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let canonical = ensure_path_under_roots(&body.path, &token)?;
+    let resp = state
+        .worker
+        .call(
+            "bundle_read",
+            serde_json::json!({"path": canonical.to_string_lossy()}),
+        )
+        .await?;
+    let ok = resp
+        .get("ok")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    if !ok {
+        let code = resp
+            .get("error_code")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        return Err(map_worker_bundle_error(code));
+    }
+    let payload = resp
+        .get("payload")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    Ok(Json(payload))
+}
+
+async fn bundle_write_route(
+    State(state): State<AppState>,
+    Extension(token): Extension<TokenRecordExt>,
+    Json(body): Json<BundleWriteRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let canonical = ensure_path_under_roots(&body.path, &token)?;
+    let approved = state
+        .consent
+        .request(ConsentRequest {
+            origin: format!("bundle-write://{}", canonical.to_string_lossy()),
+            scopes: vec![Scope::BundleWrite],
+            fs_roots: vec![],
+        })
+        .await;
+    if !approved {
+        return Err(ApiError::ConsentDenied);
+    }
+    let resp = state
+        .worker
+        .call(
+            "bundle_write",
+            serde_json::json!({
+                "path": canonical.to_string_lossy(),
+                "payload": body.payload,
+            }),
+        )
+        .await?;
+    let ok = resp
+        .get("ok")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    if !ok {
+        let code = resp
+            .get("error_code")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        return Err(map_worker_bundle_error(code));
+    }
+    Ok(Json(serde_json::json!({"ok": true})))
 }
 
 // ---- /ai/* ----------------------------------------------------------------
@@ -660,6 +768,22 @@ pub fn router(state: AppState) -> Router {
         .route_layer(from_fn(origin_guard))
         .route_layer(from_fn_with_state(state.clone(), host_guard));
 
+    // /bundle/*: read = bundle:read scope, write = bundle:write
+    // scope. Both check the path is under the token's fs_roots
+    // before letting the worker touch the file.
+    let bundle_read = Router::new()
+        .route("/bundle/read", post(bundle_read_route))
+        .route_layer(from_fn(require_bundle_read))
+        .route_layer(from_fn_with_state(state.clone(), bearer_guard))
+        .route_layer(from_fn(origin_guard))
+        .route_layer(from_fn_with_state(state.clone(), host_guard));
+    let bundle_write = Router::new()
+        .route("/bundle/write", post(bundle_write_route))
+        .route_layer(from_fn(require_bundle_write))
+        .route_layer(from_fn_with_state(state.clone(), bearer_guard))
+        .route_layer(from_fn(origin_guard))
+        .route_layer(from_fn_with_state(state.clone(), host_guard));
+
     // /ai/*: requires ai:provider:call. Tool dispatch inside the
     // chat handler additionally checks per-tool scopes against the
     // session's intersection.
@@ -688,6 +812,8 @@ pub fn router(state: AppState) -> Router {
         .merge(fs)
         .merge(run)
         .merge(excel)
+        .merge(bundle_read)
+        .merge(bundle_write)
         .merge(ai)
         .layer(from_fn_with_state(state.clone(), audit_wrap))
         .with_state(state)

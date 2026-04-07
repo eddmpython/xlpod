@@ -33,6 +33,10 @@ pub enum ApiError {
     AiSessionNotFound,
     AiTrustWindowExpired,
     AiBudgetExceeded,
+    BundleNotFound,
+    BundleTooLarge,
+    BundleCorrupt,
+    BundleSchemaMismatch,
     Internal,
 }
 
@@ -60,8 +64,13 @@ impl ApiError {
             ApiError::BadRequest | ApiError::ReservedScope | ApiError::PathTooLarge => {
                 StatusCode::BAD_REQUEST
             }
-            ApiError::NotAFile | ApiError::PathNotFound | ApiError::AiSessionNotFound => {
-                StatusCode::NOT_FOUND
+            ApiError::NotAFile
+            | ApiError::PathNotFound
+            | ApiError::AiSessionNotFound
+            | ApiError::BundleNotFound => StatusCode::NOT_FOUND,
+            ApiError::BundleTooLarge => StatusCode::BAD_REQUEST,
+            ApiError::BundleCorrupt | ApiError::BundleSchemaMismatch => {
+                StatusCode::UNPROCESSABLE_ENTITY
             }
             ApiError::AiProviderUnconfigured => StatusCode::PRECONDITION_FAILED,
             ApiError::AiProviderUpstream => StatusCode::BAD_GATEWAY,
@@ -208,6 +217,26 @@ impl ApiError {
                 code: "ai_budget_exceeded",
                 message: "today's AI spend cap has been hit",
                 hint: Some("raise XLPOD_DAILY_BUDGET_MICROS or wait until tomorrow"),
+            },
+            ApiError::BundleNotFound => ErrorBody {
+                code: "bundle_not_found",
+                message: "the workbook is a valid xlsx but does not contain an xlpod bundle",
+                hint: None,
+            },
+            ApiError::BundleTooLarge => ErrorBody {
+                code: "bundle_too_large",
+                message: "bundle exceeds the 64 MiB cap",
+                hint: None,
+            },
+            ApiError::BundleCorrupt => ErrorBody {
+                code: "bundle_corrupt",
+                message: "bundle JSON or zip is malformed",
+                hint: None,
+            },
+            ApiError::BundleSchemaMismatch => ErrorBody {
+                code: "bundle_schema_mismatch",
+                message: "bundle schema_version is newer than this launcher knows",
+                hint: Some("update xlpod-launcher"),
             },
             ApiError::Internal => ErrorBody {
                 code: "internal",

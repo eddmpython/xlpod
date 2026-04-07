@@ -26,6 +26,17 @@ import os
 import sys
 import traceback
 
+# Phase 11 — make the launcher client package importable for the
+# bundle_read / bundle_write RPC methods. The launcher passes
+# `XLPOD_CLIENT_PATH` pointing at the directory containing
+# `xlpod/__init__.py`; in production this is either the wheel-
+# installed location or the repo's `client/` directory. We tolerate
+# the env var being missing (older launcher) and only fail if a
+# bundle method is actually called.
+_CLIENT_PATH = os.environ.get("XLPOD_CLIENT_PATH")
+if _CLIENT_PATH and _CLIENT_PATH not in sys.path:
+    sys.path.insert(0, _CLIENT_PATH)
+
 
 def _send(payload):
     line = json.dumps(payload)
@@ -210,6 +221,72 @@ def _excel_range_read(workbook, sheet, address):
         return {"ok": False, "error_code": "excel_failed", "message": str(e)}
 
 
+def _bundle_read(path):
+    try:
+        from xlpod.bundle import (  # type: ignore
+            BundleNotFound,
+            BundleReader,
+            BundleSchemaMismatch,
+            BundleTooLarge,
+            BundleCorrupt,
+        )
+    except Exception as e:
+        return {"ok": False, "error_code": "bundle_corrupt", "message": "client package missing: {}".format(e)}
+    try:
+        payload = BundleReader(path).read()
+    except FileNotFoundError as e:
+        return {"ok": False, "error_code": "path_not_found", "message": str(e)}
+    except BundleNotFound as e:
+        return {"ok": False, "error_code": "bundle_not_found", "message": str(e)}
+    except BundleSchemaMismatch as e:
+        return {"ok": False, "error_code": "bundle_schema_mismatch", "message": str(e)}
+    except BundleTooLarge as e:
+        return {"ok": False, "error_code": "bundle_too_large", "message": str(e)}
+    except BundleCorrupt as e:
+        return {"ok": False, "error_code": "bundle_corrupt", "message": str(e)}
+    except Exception as e:
+        return {"ok": False, "error_code": "bundle_corrupt", "message": str(e)}
+    return {"ok": True, "payload": payload.to_dict()}
+
+
+def _bundle_write(path, payload_dict):
+    try:
+        from xlpod.bundle import (  # type: ignore
+            BundlePayload,
+            BundleWriter,
+            BundleTooLarge,
+            BundleCorrupt,
+        )
+    except Exception as e:
+        return {"ok": False, "error_code": "bundle_corrupt", "message": "client package missing: {}".format(e)}
+    try:
+        # Build a BundlePayload from the inbound dict, accepting both
+        # the canonical to_dict() shape and a direct field mapping.
+        if isinstance(payload_dict, dict) and payload_dict.get("schema"):
+            payload = BundlePayload.from_dict(payload_dict)
+        else:
+            md = (payload_dict or {}).get("metadata") or {}
+            ai = (payload_dict or {}).get("ai_history") or {}
+            payload = BundlePayload(
+                created_ms=int(md.get("created_ms", 0) or 0),
+                ai_sessions=list(ai.get("sessions", [])),
+                python_modules=list((payload_dict or {}).get("python_modules", [])),
+            )
+    except Exception as e:
+        return {"ok": False, "error_code": "bundle_corrupt", "message": str(e)}
+    try:
+        BundleWriter(path).write(payload)
+    except FileNotFoundError as e:
+        return {"ok": False, "error_code": "path_not_found", "message": str(e)}
+    except BundleTooLarge as e:
+        return {"ok": False, "error_code": "bundle_too_large", "message": str(e)}
+    except BundleCorrupt as e:
+        return {"ok": False, "error_code": "bundle_corrupt", "message": str(e)}
+    except Exception as e:
+        return {"ok": False, "error_code": "bundle_corrupt", "message": str(e)}
+    return {"ok": True}
+
+
 def _exec(code):
     out = io.StringIO()
     err = io.StringIO()
@@ -270,6 +347,14 @@ def _main():
                 params.get("sheet", ""),
                 params.get("range", ""),
             )
+            payload["id"] = rid
+            _send(payload)
+        elif method == "bundle_read":
+            payload = _bundle_read(params.get("path", ""))
+            payload["id"] = rid
+            _send(payload)
+        elif method == "bundle_write":
+            payload = _bundle_write(params.get("path", ""), params.get("payload", {}))
             payload["id"] = rid
             _send(payload)
         elif method == "shutdown":

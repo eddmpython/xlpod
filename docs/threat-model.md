@@ -223,6 +223,32 @@ New surface introduced after the initial draft and the threats it brings:
   in-flight chat request is blocked, never the launcher's other
   consumers.
 
+### From Phase 11 (`/bundle/*` launcher routes)
+
+- **T53 (bundle path traversal)**: caller writes a bundle to a
+  workbook outside the token's `fs_roots`. **Mitigation**: both
+  `bundle_read_route` and `bundle_write_route` call
+  `ensure_path_under_roots` which canonicalizes the requested path
+  via `std::fs::canonicalize` and rejects anything not starting
+  with one of the granted roots — same defense as `/fs/read`,
+  same regression test surface.
+
+- **T54 (worker reads arbitrary file via bundle_read RPC)**: the
+  worker process is trusted *inside* the launcher boundary, so
+  the JSON-RPC `bundle_read` could in principle be invoked with a
+  path the *outer* HTTP layer never blessed. **Mitigation**: the
+  worker is only ever spoken to from inside the launcher process
+  (via tokio Mutex + stdin/stdout pipes); there is no externally
+  reachable entry point. The HTTP routes are the only gate.
+
+- **T55 (race between Excel save and bundle write)**: Excel
+  re-writes the workbook while the launcher is mid-write. **Mitigation
+  partial**: the writer uses an atomic temp file + rename so
+  either Excel's version or the bundle version wins, never a
+  truncated mix. A future revision will add a detection step
+  before write that asks Excel to flush via the COM model and
+  rejects with a structured `bundle_workbook_locked` error.
+
 ### From Phase 10 (workbook bundle reader/writer)
 
 - **T50 (zip bomb in bundle)**: a hostile workbook ships a custom

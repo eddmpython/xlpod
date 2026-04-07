@@ -728,6 +728,166 @@ async fn ai_set_key_consent_denied_returns_403() {
     let _ = h;
 }
 
+// ---- /bundle/* -------------------------------------------------------------
+//
+// Phase 11 round-trips a real `.xlsx` file through the launcher.
+// We construct a minimal valid OOXML zip in the test, hand the
+// launcher its path inside an approved fs_root, and exercise read
+// + write end to end. The worker imports `xlpod.bundle` from the
+// repo's client/ directory; the launcher's spawn helper falls back
+// to the manifest-relative path so cargo test works without env
+// vars.
+
+fn make_minimal_xlsx_for_test(dir: &std::path::Path) -> std::path::PathBuf {
+    // Build a minimal OOXML container by shelling out to python.
+    // The CI rust job runs on windows-latest which has python on
+    // PATH, the dev box has uv-managed python, and the worker
+    // tests already depend on python being available. Keeping the
+    // helper out-of-process avoids adding a Rust zip crate just
+    // for fixtures.
+    let path = dir.join("book.xlsx");
+    let script = r#"
+import sys, zipfile
+p = sys.argv[1]
+ct = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/></Types>'
+rels = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>'
+with zipfile.ZipFile(p, "w", zipfile.ZIP_DEFLATED) as z:
+    z.writestr("[Content_Types].xml", ct)
+    z.writestr("_rels/.rels", rels)
+"#;
+    let status = std::process::Command::new("python")
+        .arg("-c")
+        .arg(script)
+        .arg(&path)
+        .status()
+        .expect("spawn python");
+    assert!(status.success(), "python failed to build minimal xlsx");
+    path
+}
+
+async fn handshake_with_bundle_scopes(h: &Harness, dir: &std::path::Path) -> String {
+    let resp = client()
+        .post(format!("{}/auth/handshake", h.base))
+        .header("Origin", ORIGIN)
+        .header("Host", &h.host_header)
+        .json(&json!({
+            "requested_scopes": ["bundle:read", "bundle:write", "fs:read"],
+            "fs_roots": [dir.to_string_lossy()],
+        }))
+        .send()
+        .await
+        .expect("send");
+    let body: serde_json::Value = resp.json().await.expect("json");
+    body["token"].as_str().expect("token").to_string()
+}
+
+#[tokio::test]
+async fn bundle_read_returns_not_found_for_plain_xlsx() {
+    let h = spawn().await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let book = make_minimal_xlsx_for_test(dir.path());
+    let token = handshake_with_bundle_scopes(&h, dir.path()).await;
+    let resp = client()
+        .post(format!("{}/bundle/read", h.base))
+        .header("Origin", ORIGIN)
+        .header("Host", &h.host_header)
+        .header("Authorization", format!("Bearer {token}"))
+        .json(&json!({"path": book.to_string_lossy()}))
+        .send()
+        .await
+        .expect("send");
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    let body: serde_json::Value = resp.json().await.expect("json");
+    assert_eq!(body["code"], "bundle_not_found");
+}
+
+#[tokio::test]
+async fn bundle_write_then_read_round_trip() {
+    let h = spawn().await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let book = make_minimal_xlsx_for_test(dir.path());
+    let token = handshake_with_bundle_scopes(&h, dir.path()).await;
+
+    let write_resp = client()
+        .post(format!("{}/bundle/write", h.base))
+        .header("Origin", ORIGIN)
+        .header("Host", &h.host_header)
+        .header("Authorization", format!("Bearer {token}"))
+        .json(&json!({
+            "path": book.to_string_lossy(),
+            "payload": {
+                "metadata": {"created_ms": 42},
+                "ai_history": {"sessions": [{"session_id": "test", "messages": []}]},
+                "python_modules": ["pandas"]
+            }
+        }))
+        .send()
+        .await
+        .expect("send");
+    assert_eq!(write_resp.status(), StatusCode::OK);
+
+    let read_resp = client()
+        .post(format!("{}/bundle/read", h.base))
+        .header("Origin", ORIGIN)
+        .header("Host", &h.host_header)
+        .header("Authorization", format!("Bearer {token}"))
+        .json(&json!({"path": book.to_string_lossy()}))
+        .send()
+        .await
+        .expect("send");
+    assert_eq!(read_resp.status(), StatusCode::OK);
+    let body: serde_json::Value = read_resp.json().await.expect("json");
+    assert_eq!(body["metadata"]["created_ms"], 42);
+    assert_eq!(body["python_modules"][0], "pandas");
+}
+
+#[tokio::test]
+async fn bundle_read_outside_fs_roots_is_forbidden() {
+    let h = spawn().await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let other = tempfile::tempdir().expect("tempdir2");
+    let book = make_minimal_xlsx_for_test(other.path());
+    let token = handshake_with_bundle_scopes(&h, dir.path()).await;
+    let resp = client()
+        .post(format!("{}/bundle/read", h.base))
+        .header("Origin", ORIGIN)
+        .header("Host", &h.host_header)
+        .header("Authorization", format!("Bearer {token}"))
+        .json(&json!({"path": book.to_string_lossy()}))
+        .send()
+        .await
+        .expect("send");
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let body: serde_json::Value = resp.json().await.expect("json");
+    assert_eq!(body["code"], "forbidden_path");
+}
+
+#[tokio::test]
+async fn bundle_write_consent_denied_returns_403() {
+    let h = spawn_with_consent(Arc::new(DenyAllConsent)).await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let book = make_minimal_xlsx_for_test(dir.path());
+    // DenyAll blocks the handshake itself when scopes are non-
+    // empty, so use the empty-scopes shortcut to verify the
+    // bundle path needs its own scope. We instead test the deny
+    // path at handshake — bundle scopes get rejected.
+    let resp = client()
+        .post(format!("{}/auth/handshake", h.base))
+        .header("Origin", ORIGIN)
+        .header("Host", &h.host_header)
+        .json(&json!({
+            "requested_scopes": ["bundle:write"],
+            "fs_roots": [dir.path().to_string_lossy()],
+        }))
+        .send()
+        .await
+        .expect("send");
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let body: serde_json::Value = resp.json().await.expect("json");
+    assert_eq!(body["code"], "consent_denied");
+    let _ = book; // silence unused warning
+}
+
 // ---- /excel/* --------------------------------------------------------------
 //
 // Phase 6 Excel tests prove the wire reaches the worker through

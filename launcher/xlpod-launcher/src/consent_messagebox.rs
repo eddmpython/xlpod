@@ -108,6 +108,8 @@ fn scope_label(s: &Scope) -> &'static str {
         Scope::AiProviderCall => "ai:provider:call",
         Scope::AiCodegenWrite => "ai:codegen:write",
         Scope::AiExecPython => "ai:exec:python",
+        Scope::BundleRead => "bundle:read",
+        Scope::BundleWrite => "bundle:write",
     }
 }
 

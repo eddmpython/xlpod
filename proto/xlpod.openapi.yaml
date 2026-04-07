@@ -63,6 +63,8 @@ tags:
     description: Execute Python in the launcher's worker process.
   - name: excel
     description: Drive a running Excel instance via COM (Windows only).
+  - name: bundle
+    description: Read and write the xlpod custom XML part inside an .xlsx file.
   - name: ai
     description: |
       AI provider relay. The launcher proxies chat requests to a remote
@@ -572,6 +574,92 @@ paths:
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403":
           description: Consent denied.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+
+  /bundle/read:
+    post:
+      operationId: postBundleRead
+      tags: [bundle]
+      summary: Read the xlpod bundle from a workbook on disk.
+      description: |
+        Opens the `.xlsx` file at `path` (which must be under one of
+        the token's `fs_roots`), parses the xlpod custom XML part if
+        present, and returns the JSON payload. Returns
+        `bundle_not_found` if the file is a valid `.xlsx` but does
+        not carry an xlpod bundle. Phase 10's
+        `proto/xlpod.bundle.md` is the SSOT for the payload shape.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/XXLPodProto"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path]
+              properties:
+                path: {type: string}
+      responses:
+        "200":
+          description: Bundle payload.
+          content:
+            application/json:
+              schema: {type: object}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403":
+          description: Token lacks `bundle:read` or path is outside fs_roots.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+        "404":
+          description: File or bundle not found.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+
+  /bundle/write:
+    post:
+      operationId: postBundleWrite
+      tags: [bundle]
+      summary: Write or replace the xlpod bundle inside a workbook.
+      description: |
+        Atomically replaces the bundle inside the `.xlsx` at `path`
+        (which must be under one of the token's `fs_roots`).
+        Existing custom parts (xlwings Lite source, etc.) are
+        preserved byte-for-byte. Phase 11 ships per-call consent
+        on every write because the operation modifies a user file
+        — Phase 9's trust window can be used to skip the dialog
+        for a multi-step session.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/XXLPodProto"
+        - $ref: "#/components/parameters/XXLPodPlanOnly"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path, payload]
+              properties:
+                path: {type: string}
+                payload: {type: object}
+      responses:
+        "200":
+          description: Bundle written.
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403":
+          description: Token lacks `bundle:write`, path outside fs_roots, or consent denied.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+        "404":
+          description: Workbook file not found.
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Error"}
@@ -1182,6 +1270,10 @@ components:
             - "ai_session_not_found"
             - "ai_trust_window_expired"
             - "ai_budget_exceeded"
+            - "bundle_not_found"
+            - "bundle_too_large"
+            - "bundle_corrupt"
+            - "bundle_schema_mismatch"
         message:
           type: string
           description: Human-readable message (not localized in v0).

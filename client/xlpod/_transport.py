@@ -129,12 +129,14 @@ class PyodideTransport:
         return None
 
 
-def autodetect() -> Transport:
+def autodetect(*, verify: Any = True, timeout: float = 10.0) -> Transport:
     """Return the right transport for the current environment.
 
     Pyodide reports ``sys.platform == "emscripten"``. Anywhere else we
-    assume CPython and use httpx.
+    assume CPython and use httpx. ``verify`` is forwarded to httpx
+    (`True`, `False`, a CA bundle path, or an `ssl.SSLContext`); the
+    Pyodide transport ignores it because the browser controls TLS.
     """
     if sys.platform == "emscripten":
         return PyodideTransport()
-    return HttpxAsyncTransport()
+    return HttpxAsyncTransport(verify=verify, timeout=timeout)

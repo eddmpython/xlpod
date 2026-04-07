@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from typing import Iterable, List, Optional
+from typing import Any, Iterable, Optional
 
 from . import errors
 from ._proto import (
@@ -40,11 +40,15 @@ class AsyncClient:
         *,
         base_url: str = DEFAULT_BASE_URL,
         origin: str = DEFAULT_ORIGIN,
+        verify: Any = True,
+        timeout: float = DEFAULT_TIMEOUT_SECONDS,
         transport: Optional[Transport] = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._origin = origin
-        self._transport: Transport = transport if transport is not None else autodetect()
+        self._transport: Transport = (
+            transport if transport is not None else autodetect(verify=verify, timeout=timeout)
+        )
         self._token: Optional[str] = None
 
     # ---- public API ------------------------------------------------------
@@ -119,12 +123,17 @@ class AsyncClient:
 
 
 class Client:
-    """Synchronous wrapper. CPython only.
+    """Synchronous wrapper around :class:`AsyncClient`. CPython only.
 
-    Each call runs a fresh asyncio event loop via ``asyncio.run``. This
-    is fine for the launcher's traffic profile (one user, low rate) and
-    keeps the sync surface dependency-free. If you are inside an
-    existing event loop, use ``AsyncClient`` directly.
+    The wrapper owns one persistent ``asyncio`` event loop for its
+    entire lifetime — *not* a fresh ``asyncio.run`` per call. This
+    matters on Windows: ``httpx.AsyncClient`` binds its connection pool
+    and TLS state to whichever loop first touched it, and the
+    ``ProactorEventLoop`` raises ``Event loop is closed`` if a later
+    call uses a different loop. One loop, one client, no surprises.
+
+    If you are already inside an event loop, use :class:`AsyncClient`
+    directly instead.
     """
 
     def __init__(
@@ -132,13 +141,22 @@ class Client:
         *,
         base_url: str = DEFAULT_BASE_URL,
         origin: str = DEFAULT_ORIGIN,
+        verify: Any = True,
+        timeout: float = DEFAULT_TIMEOUT_SECONDS,
         transport: Optional[Transport] = None,
     ) -> None:
         if sys.platform == "emscripten":
             raise RuntimeError(
                 "xlpod.Client is sync; use xlpod.AsyncClient on Pyodide / xlwings Lite"
             )
-        self._async = AsyncClient(base_url=base_url, origin=origin, transport=transport)
+        self._loop: Optional[asyncio.AbstractEventLoop] = asyncio.new_event_loop()
+        self._async = AsyncClient(
+            base_url=base_url,
+            origin=origin,
+            verify=verify,
+            timeout=timeout,
+            transport=transport,
+        )
 
     # ---- public API ------------------------------------------------------
 
@@ -147,19 +165,36 @@ class Client:
         return self._async.token
 
     def health(self) -> Health:
-        return asyncio.run(self._async.health())
+        return self._run(self._async.health())
 
     def handshake(self, *, scopes: Iterable[str]) -> Handshake:
-        return asyncio.run(self._async.handshake(scopes=scopes))
+        return self._run(self._async.handshake(scopes=scopes))
 
     def version(self) -> Version:
-        return asyncio.run(self._async.version())
+        return self._run(self._async.version())
 
     def close(self) -> None:
-        asyncio.run(self._async.aclose())
+        if self._loop is None:
+            return
+        try:
+            self._loop.run_until_complete(self._async.aclose())
+        finally:
+            self._loop.close()
+            self._loop = None
 
     def __enter__(self) -> "Client":
         return self
 
     def __exit__(self, *_exc: object) -> None:
         self.close()
+
+    def __del__(self) -> None:  # best-effort cleanup if user forgot close()
+        try:
+            self.close()
+        except Exception:
+            pass
+
+    def _run(self, coro: Any) -> Any:
+        if self._loop is None:
+            raise RuntimeError("xlpod.Client has been closed")
+        return self._loop.run_until_complete(coro)

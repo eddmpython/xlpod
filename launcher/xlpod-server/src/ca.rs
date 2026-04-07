@@ -99,8 +99,7 @@ impl std::error::Error for CaError {}
 pub fn ensure(paths: &CaPaths) -> Result<(PathBuf, PathBuf), CaError> {
     fs::create_dir_all(&paths.root_dir)?;
 
-    let (ca_cert_pem, ca_key_pem, ca_kp, der) = if paths.ca_cert.exists() && paths.ca_key.exists()
-    {
+    let (ca_cert_pem, ca_key_pem, ca_kp, der) = if paths.ca_cert.exists() && paths.ca_key.exists() {
         let cert_pem = fs::read_to_string(&paths.ca_cert)?;
         let key_pem = fs::read_to_string(&paths.ca_key)?;
         let kp = KeyPair::from_pem(&key_pem)?;
@@ -145,10 +144,7 @@ pub fn ensure(paths: &CaPaths) -> Result<(PathBuf, PathBuf), CaError> {
 fn generate_root_ca() -> Result<(String, String, KeyPair), rcgen::Error> {
     let mut params = CertificateParams::new(Vec::<String>::new())?;
     params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
-    params.key_usages = vec![
-        KeyUsagePurpose::KeyCertSign,
-        KeyUsagePurpose::CrlSign,
-    ];
+    params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
     let mut dn = DistinguishedName::new();
     dn.push(DnType::CommonName, "xlpod local CA");
     dn.push(DnType::OrganizationName, "xlpod");
@@ -168,10 +164,7 @@ fn parse_ca_params(_pem: &str) -> Result<CertificateParams, rcgen::Error> {
     // loaded) and the CA's own DN — we rebuild a matching params struct.
     let mut params = CertificateParams::new(Vec::<String>::new())?;
     params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
-    params.key_usages = vec![
-        KeyUsagePurpose::KeyCertSign,
-        KeyUsagePurpose::CrlSign,
-    ];
+    params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
     let mut dn = DistinguishedName::new();
     dn.push(DnType::CommonName, "xlpod local CA");
     dn.push(DnType::OrganizationName, "xlpod");
@@ -234,8 +227,8 @@ fn install_user_root(der: &[u8]) -> Result<(), CaError> {
     use windows_sys::Win32::Security::Cryptography::{
         CertAddEncodedCertificateToStore, CertCloseStore, CertOpenStore,
         CERT_STORE_ADD_REPLACE_EXISTING, CERT_STORE_PROV_SYSTEM_W,
-        CERT_SYSTEM_STORE_CURRENT_USER_ID, CERT_SYSTEM_STORE_LOCATION_SHIFT,
-        PKCS_7_ASN_ENCODING, X509_ASN_ENCODING,
+        CERT_SYSTEM_STORE_CURRENT_USER_ID, CERT_SYSTEM_STORE_LOCATION_SHIFT, PKCS_7_ASN_ENCODING,
+        X509_ASN_ENCODING,
     };
     let store_name: Vec<u16> = "Root\0".encode_utf16().collect();
     let store_flags = CERT_SYSTEM_STORE_CURRENT_USER_ID << CERT_SYSTEM_STORE_LOCATION_SHIFT;

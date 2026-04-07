@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Block AI tool traces from leaking into commit messages.
+# Activate once per clone:
+#     git config core.hooksPath .githooks
+#
+# Rationale: see CLAUDE.md / memory/feedback_no_ai_traces_in_commits.md.
+# AI assistant attribution in a public repo creates noise, dates the
+# project the moment a tool is renamed, and biases reviewers. The rule
+# is "no traces, ever" — this hook is the mechanical enforcement of that
+# promise. Override is *not* supported; if a hook update is needed, edit
+# this file in a normal commit.
+
+set -euo pipefail
+
+msg_file=$1
+msg=$(cat "$msg_file")
+
+# Patterns are matched case-insensitively against the entire message.
+# Each entry is a single extended-regex alternation pattern.
+patterns=(
+    'Co-Authored-By:[[:space:]]*Claude'
+    'Co-Authored-By:[[:space:]]*Anthropic'
+    'Co-Authored-By:[[:space:]]*GPT'
+    'Co-Authored-By:[[:space:]]*Copilot'
+    'Generated[[:space:]]+(with|by)[[:space:]]+Claude'
+    'Generated[[:space:]]+(with|by)[[:space:]]+Cursor'
+    'Generated[[:space:]]+(with|by)[[:space:]]+Copilot'
+    '(Built|Made|Written)[[:space:]]+with[[:space:]]+Claude'
+    '🤖[[:space:]]*Generated'
+    '🤖[[:space:]]*with[[:space:]]+Claude'
+    'claude\.com/claude-code'
+    'claude\.ai/code'
+)
+
+for p in "${patterns[@]}"; do
+    if printf '%s' "$msg" | grep -E -i -q "$p"; then
+        echo "commit-msg hook: REJECTED — AI tool trace matched: $p" >&2
+        echo "" >&2
+        echo "xlpod policy forbids AI-attribution lines in commit messages." >&2
+        echo "See CLAUDE.md and memory/feedback_no_ai_traces_in_commits.md." >&2
+        exit 1
+    fi
+done
+
+exit 0

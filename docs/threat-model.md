@@ -60,6 +60,77 @@ including the Pyodide client that calls it from xlwings Lite.
   (c) AI calls require the same tray consent as manual calls,
   (d) audit log distinguishes AI actor.
 
+## Phase 1.1–1.4 deltas
+
+New surface introduced after the initial draft and the threats it brings:
+
+### From Phase 1.1a (axum + rustls server)
+- **T13.** Server bound to a non-loopback address by accident.
+  **Mitigation:** `BIND_V4`/`BIND_V6` are compile-time `IpAddr` constants
+  in [`launcher/xlpod-server/src/bind.rs`](../launcher/xlpod-server/src/bind.rs)
+  guarded by a `const _: () = …` static assertion that panics the build
+  if `BIND_V4` is not in `127.0.0.0/8`. Workspace lints additionally
+  `deny(unsafe_code)` so a quick `0.0.0.0` patch cannot bypass via FFI.
+
+### From Phase 1.2 (5-check stack + tokens + audit)
+- **T14.** Bearer token leaked through a log line, panic message, or
+  crash dump. **Mitigation:** the audit log records only `token_id`
+  (first 8 hex chars of the token), never the secret; the `Handshake`
+  schema tags `token` as `format: password`; tokens live exclusively in
+  process memory inside `TokenStore` and are never persisted. **Open:**
+  Windows minidumps still capture process memory — accepted residual
+  risk for Phase 1; a future revision should `mlock` / `VirtualLock` the
+  token store pages.
+- **T15.** Audit log file tampered with by a process running as the
+  same user. **Mitigation:** the file is opened with `append` mode so
+  in-process writes always go at the tail; cross-process tampering is
+  in-scope for the same-user threat we already accept (T3). A future
+  revision should hash-chain entries so post-hoc edits are detectable.
+- **T16.** Per-token rate limiter exhausted by anonymous flood on
+  `/auth/handshake` (no token yet, no per-token bucket).
+  **Mitigation:** Phase 1.2 enforces Origin + Host on `/auth/handshake`,
+  which already restricts callers to xlwings Lite. A per-IP limiter is
+  out of scope for a loopback-only server; documented.
+- **T17.** Reserved AI scope smuggled in early via a handshake.
+  **Mitigation:** `Scope::is_reserved()` rejects any handshake whose
+  `requested_scopes` contains an `ai:*` value, returning `reserved_scope`
+  with HTTP 400, *before* a token is issued.
+
+### From Phase 1.3 (rcgen self-CA, install deferred)
+- **T18.** Local CA private key (`rootCA-key.pem`) read by another
+  process running as the same user. **Mitigation:** the file lives under
+  `%LOCALAPPDATA%\xlpod\ca\` which inherits the per-user ACL. **Open:**
+  we do not yet apply an explicit DACL that *denies* read to other
+  identities; tracked for Phase 1.4.
+- **T19.** Win32 `CertAddEncodedCertificateToStore` FFI parameter
+  confusion (length/encoding mismatch). **Mitigation:** the only
+  `unsafe` block in the workspace carries an inline `// SAFETY:` proof
+  enumerating every pointer/length the call relies on, the workspace
+  lint is `deny(unsafe_code)` so any *new* unsafe block requires an
+  explicit `#[allow]`, and CI rejects clippy warnings to keep the
+  exception list reviewable.
+
+### From Phase 1.1b (tao + tray-icon launcher)
+- **T20.** Tray "Quit" terminates the process while the server is
+  mid-write to the audit log, truncating the trailing JSON line.
+  **Mitigation:** the audit appender flushes after every entry, so the
+  worst case is losing the in-flight request, not corrupting earlier
+  history. Phase 1.4 will route Quit through a tokio
+  `CancellationToken` so the server drains gracefully.
+- **T21.** Worker thread that runs the server panics, but the tray
+  thread keeps the process alive with no functioning HTTP surface.
+  **Mitigation:** Phase 1.4 will install a `std::thread` panic hook
+  that calls `process::exit(1)` so a dead server cannot present a
+  green tray.
+
+### From Phase 1.4 (CI + commit-msg hook)
+- **T22.** AI-tool attribution slips into a commit message. Not a
+  security threat per se, but a policy violation that erodes trust.
+  **Mitigation:** [`.githooks/commit-msg`](../.githooks/commit-msg) is
+  the local enforcement point; the `no-ai-traces` job in
+  `.github/workflows/ci.yml` is the server-side mirror. There is no
+  `--no-verify` escape — a missed local install just fails CI.
+
 ## Out of scope (v0)
 - Other users on the same machine (multi-user threat).
 - Physical attacker with disk access.

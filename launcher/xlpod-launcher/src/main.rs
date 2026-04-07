@@ -42,11 +42,7 @@ fn main() {
     let icon = make_icon();
     let menu = Menu::new();
     let title = MenuItem::new(format!("xlpod v{LAUNCHER_VERSION}"), false, None);
-    let endpoint = MenuItem::new(
-        format!("https://{} (loopback)", addr_v4()),
-        false,
-        None,
-    );
+    let endpoint = MenuItem::new(format!("https://{} (loopback)", addr_v4()), false, None);
     let sep = PredefinedMenuItem::separator();
     let quit = MenuItem::new("Quit", true, None);
     menu.append(&title).expect("menu append title");

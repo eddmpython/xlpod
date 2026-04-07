@@ -145,4 +145,3 @@ pub fn router(state: AppState) -> Router {
         .layer(from_fn_with_state(state.clone(), audit_wrap))
         .with_state(state)
 }
-

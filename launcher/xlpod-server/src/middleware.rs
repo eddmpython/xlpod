@@ -35,11 +35,7 @@ use crate::{
 
 // ---- 0. audit wrapper -----------------------------------------------------
 
-pub async fn audit_wrap(
-    State(state): State<AppState>,
-    request: Request,
-    next: Next,
-) -> Response {
+pub async fn audit_wrap(State(state): State<AppState>, request: Request, next: Next) -> Response {
     let start = Instant::now();
     let method = request.method().clone();
     let path = request.uri().path().to_owned();
@@ -118,7 +114,9 @@ pub async fn bearer_guard(
     let record = state.tokens.lookup(&token)?;
     let token_id = TokenStore::id_of(&token);
     state.limiter.check(&token_id)?;
-    request.extensions_mut().insert(TokenIdExt(token_id.clone()));
+    request
+        .extensions_mut()
+        .insert(TokenIdExt(token_id.clone()));
     request.extensions_mut().insert(TokenRecordExt(record));
     let mut response = next.run(request).await;
     // Propagate so the audit layer (outer) can record token_id even when
@@ -171,4 +169,3 @@ fn bearer_token(headers: &HeaderMap) -> Option<String> {
         Some(stripped.to_owned())
     }
 }
-

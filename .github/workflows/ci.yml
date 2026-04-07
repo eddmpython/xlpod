@@ -1,0 +1,145 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs on the same ref so a fast push doesn't pile up
+# minutes. Each PR/branch keeps the latest in flight.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+
+  # ---------------------------------------------------------------------
+  # Rust workspace under launcher/. Windows runner is the production
+  # target; we run there to catch Win32 FFI and TLS issues immediately.
+  # ---------------------------------------------------------------------
+  rust:
+    name: rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest]
+    defaults:
+      run:
+        working-directory: launcher
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache cargo + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: launcher
+
+      - name: cargo build (workspace)
+        run: cargo build --workspace --all-targets
+
+      - name: cargo test (workspace)
+        run: cargo test --workspace
+
+      - name: cargo clippy (deny warnings)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: cargo fmt --check
+        run: cargo fmt --all --check
+
+  # ---------------------------------------------------------------------
+  # OpenAPI single source of truth must lint clean.
+  # ---------------------------------------------------------------------
+  proto:
+    name: openapi spec lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Redocly lint
+        run: npx --yes @redocly/cli@latest lint proto/xlpod.openapi.yaml
+
+  # ---------------------------------------------------------------------
+  # uv workspace sanity. Phase 1 has no Python source yet beyond the
+  # Phase 0 probe; this job exists to keep `uv sync` healthy as deps
+  # land in client/ during Phase 2.
+  # ---------------------------------------------------------------------
+  python:
+    name: uv sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: uv sync
+        run: uv sync --group phase0
+
+  # ---------------------------------------------------------------------
+  # Server-side mirror of .githooks/commit-msg. Catches AI traces in
+  # commit messages even if a contributor forgot
+  # `git config core.hooksPath .githooks`. Only inspects commits new to
+  # this push/PR.
+  # ---------------------------------------------------------------------
+  no-ai-traces:
+    name: commit messages (no AI traces)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Determine commit range
+        id: range
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+            head="${{ github.event.pull_request.head.sha }}"
+          else
+            base="${{ github.event.before }}"
+            head="${{ github.sha }}"
+          fi
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            base=$(git rev-list --max-parents=0 HEAD | tail -n1)
+          fi
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          echo "head=$head" >> "$GITHUB_OUTPUT"
+      - name: Scan commit messages
+        run: |
+          set -e
+          range="${{ steps.range.outputs.base }}..${{ steps.range.outputs.head }}"
+          echo "scanning $range"
+          bad=0
+          for sha in $(git rev-list "$range"); do
+            msg=$(git log -1 --format=%B "$sha")
+            for p in \
+                'Co-Authored-By:[[:space:]]*Claude' \
+                'Co-Authored-By:[[:space:]]*Anthropic' \
+                'Co-Authored-By:[[:space:]]*GPT' \
+                'Co-Authored-By:[[:space:]]*Copilot' \
+                'Generated[[:space:]]+(with|by)[[:space:]]+Claude' \
+                'Generated[[:space:]]+(with|by)[[:space:]]+Cursor' \
+                'Generated[[:space:]]+(with|by)[[:space:]]+Copilot' \
+                '🤖[[:space:]]*Generated' \
+                'claude\.com/claude-code' \
+                'claude\.ai/code'; do
+              if printf '%s' "$msg" | grep -E -i -q "$p"; then
+                echo "::error::commit $sha contains AI trace matching: $p"
+                bad=1
+              fi
+            done
+          done
+          if [ "$bad" -ne 0 ]; then
+            echo "see .githooks/commit-msg and CLAUDE.md for the policy"
+            exit 1
+          fi

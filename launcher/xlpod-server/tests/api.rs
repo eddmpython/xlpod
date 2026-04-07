@@ -178,7 +178,10 @@ async fn version_with_unknown_token() {
         .get(format!("{}/launcher/version", h.base))
         .header("Origin", ORIGIN)
         .header("Host", &h.host_header)
-        .header("Authorization", "Bearer 0000000000000000000000000000000000000000000000000000000000000000")
+        .header(
+            "Authorization",
+            "Bearer 0000000000000000000000000000000000000000000000000000000000000000",
+        )
         .send()
         .await
         .expect("send");

@@ -1,0 +1,22 @@
+[package]
+name = "xlpod-server"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Loopback HTTPS server for xlpod. See proto/xlpod.openapi.yaml for the authoritative API surface."
+
+[lints]
+workspace = true
+
+[dependencies]
+axum = "0.7"
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[[bin]]
+name = "xlpod-server"
+path = "src/main.rs"

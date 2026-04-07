@@ -61,6 +61,8 @@ tags:
     description: Filesystem reads under token-bound approved roots.
   - name: run
     description: Execute Python in the launcher's worker process.
+  - name: excel
+    description: Drive a running Excel instance via COM (Windows only).
   - name: ws
     description: Bidirectional event channel.
 
@@ -254,6 +256,86 @@ paths:
               schema: {$ref: "#/components/schemas/Error"}
         "504":
           description: Worker exceeded the wall-clock cap; the worker has been killed.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+
+  /excel/workbooks:
+    get:
+      operationId: getExcelWorkbooks
+      tags: [excel]
+      summary: List workbooks open in the running Excel instance.
+      description: |
+        Attaches to the user's already-running Excel via COM
+        (`GetActiveObject("Excel.Application")`) and returns the
+        currently open workbooks. Does **not** start a new Excel
+        instance — Phase 6 is read-only against whatever Excel the
+        user already opened.
+
+        Requires `excel:com` scope. Returns 503 with
+        `excel_not_available` if `pywin32` is missing from the
+        worker's Python (e.g. on a Linux CI runner), or
+        `excel_not_running` if Excel is not currently open.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/XXLPodProto"
+      responses:
+        "200":
+          description: List of open workbooks.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkbookList"
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403":
+          description: Token lacks `excel:com`.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+        "503":
+          description: Excel COM unavailable on the worker.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+
+  /excel/range/read:
+    post:
+      operationId: postExcelRangeRead
+      tags: [excel]
+      summary: Read a range from a workbook in the running Excel instance.
+      description: |
+        Reads `range` from `sheet` in `workbook` (all three are
+        Excel-side names; the workbook must already be open). The
+        result is a 2-D array of cell values; single cells come back
+        as `[[value]]` so the response shape is uniform. Empty cells
+        return `null`. The canonical Excel address Excel resolved to
+        is returned in `address` for round-trip clarity.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/XXLPodProto"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RangeReadRequest"
+      responses:
+        "200":
+          description: Range values.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RangeData"
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403":
+          description: Token lacks `excel:com`.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+        "503":
+          description: Excel COM unavailable on the worker.
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Error"}
@@ -471,6 +553,51 @@ components:
           type: [string, "null"]
           description: Python traceback when `ok=false`.
 
+    Workbook:
+      type: object
+      required: [name, full_name]
+      properties:
+        name:
+          type: string
+        path:
+          type: string
+          description: Directory the workbook lives in (`""` for unsaved).
+        full_name:
+          type: string
+
+    WorkbookList:
+      type: object
+      required: [workbooks]
+      properties:
+        workbooks:
+          type: array
+          items: {$ref: "#/components/schemas/Workbook"}
+
+    RangeReadRequest:
+      type: object
+      required: [workbook, sheet, range]
+      properties:
+        workbook:
+          type: string
+        sheet:
+          type: string
+        range:
+          type: string
+
+    RangeData:
+      type: object
+      required: [address, values]
+      properties:
+        address:
+          type: string
+          description: Excel-canonical address of the resolved range.
+        values:
+          type: array
+          description: 2-D array of cell values; single cells come back as [[value]].
+          items:
+            type: array
+            items: {}
+
     FileContent:
       type: object
       required: [path, size, encoding, content]
@@ -510,6 +637,9 @@ components:
             - "worker_spawn_failed"
             - "worker_timeout"
             - "worker_crashed"
+            - "excel_not_available"
+            - "excel_not_running"
+            - "excel_failed"
         message:
           type: string
           description: Human-readable message (not localized in v0).

@@ -22,6 +22,9 @@ pub enum ApiError {
     WorkerSpawnFailed,
     WorkerTimeout,
     WorkerCrashed,
+    ExcelNotAvailable,
+    ExcelNotRunning,
+    ExcelFailed,
     Internal,
 }
 
@@ -48,9 +51,13 @@ impl ApiError {
             }
             ApiError::NotAFile | ApiError::PathNotFound => StatusCode::NOT_FOUND,
             ApiError::WorkerTimeout => StatusCode::GATEWAY_TIMEOUT,
-            ApiError::WorkerSpawnFailed | ApiError::WorkerCrashed | ApiError::Internal => {
-                StatusCode::INTERNAL_SERVER_ERROR
+            ApiError::ExcelNotAvailable | ApiError::ExcelNotRunning => {
+                StatusCode::SERVICE_UNAVAILABLE
             }
+            ApiError::WorkerSpawnFailed
+            | ApiError::WorkerCrashed
+            | ApiError::ExcelFailed
+            | ApiError::Internal => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 
@@ -130,6 +137,21 @@ impl ApiError {
                 code: "worker_crashed",
                 message: "worker died mid-call",
                 hint: Some("the next call will spawn a fresh worker"),
+            },
+            ApiError::ExcelNotAvailable => ErrorBody {
+                code: "excel_not_available",
+                message: "the worker's Python does not have pywin32 installed",
+                hint: Some("pip install pywin32 into the worker interpreter, or use XLPOD_PYTHON"),
+            },
+            ApiError::ExcelNotRunning => ErrorBody {
+                code: "excel_not_running",
+                message: "no running Excel instance to attach to",
+                hint: Some("open Excel and a workbook, then retry"),
+            },
+            ApiError::ExcelFailed => ErrorBody {
+                code: "excel_failed",
+                message: "Excel COM call raised an exception",
+                hint: None,
             },
             ApiError::Internal => ErrorBody {
                 code: "internal",

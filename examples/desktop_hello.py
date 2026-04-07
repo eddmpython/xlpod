@@ -84,7 +84,7 @@ def main() -> int:
             print(f"  health    -> status={health.status} launcher={health.launcher} proto={health.proto}")
 
             handshake = client.handshake(
-                scopes=["fs:read", "run:python"],
+                scopes=["fs:read", "run:python", "excel:com"],
                 fs_roots=[str(repo_root)],
             )
             token_id = handshake.token[:8]
@@ -111,6 +111,18 @@ def main() -> int:
                 "_result = sum(range(10))"
             )
             print(f"  run.python-> ok={run.ok} result={run.result} stdout={run.stdout.strip()!r}")
+
+            # Excel COM is best-effort: pywin32 may be missing or
+            # Excel may not be open. Both surface as a specific
+            # exception so we can continue without failing the demo.
+            try:
+                wbs = client.list_workbooks()
+                summary = ", ".join(w.name for w in wbs) or "(none open)"
+                print(f"  excel.wbs -> count={len(wbs)} {summary}")
+            except xlpod.ExcelNotAvailable:
+                print("  excel.wbs -> SKIP: pywin32 not in worker python")
+            except xlpod.ExcelNotRunning:
+                print("  excel.wbs -> SKIP: Excel is not running")
     except xlpod.LauncherUnreachable as e:
         print(f"FAIL: {e}", file=sys.stderr)
         print("hint: start the launcher with `cargo run -p xlpod-server`", file=sys.stderr)

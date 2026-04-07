@@ -28,8 +28,8 @@ use crate::{
     error::ApiError,
     fs_read::{canonicalize_roots, read_under_roots},
     middleware::{
-        audit_wrap, bearer_guard, host_guard, origin_guard, require_fs_read, require_run_python,
-        TokenRecordExt,
+        audit_wrap, bearer_guard, host_guard, origin_guard, require_excel_com, require_fs_read,
+        require_run_python, TokenRecordExt,
     },
     python_worker::ExecResult,
     state::AppState,
@@ -191,6 +191,50 @@ async fn run_python(
     Ok(Json(result))
 }
 
+// ---- /excel/* -------------------------------------------------------------
+
+async fn excel_workbooks(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let resp = state
+        .worker
+        .excel_call("excel_workbooks", serde_json::json!({}))
+        .await?;
+    let workbooks = resp
+        .get("workbooks")
+        .cloned()
+        .unwrap_or(serde_json::json!([]));
+    Ok(Json(serde_json::json!({ "workbooks": workbooks })))
+}
+
+#[derive(Deserialize)]
+struct RangeReadRequest {
+    workbook: String,
+    sheet: String,
+    range: String,
+}
+
+async fn excel_range_read(
+    State(state): State<AppState>,
+    Json(body): Json<RangeReadRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let params = serde_json::json!({
+        "workbook": body.workbook,
+        "sheet": body.sheet,
+        "range": body.range,
+    });
+    let resp = state.worker.excel_call("excel_range_read", params).await?;
+    let address = resp
+        .get("address")
+        .cloned()
+        .unwrap_or(serde_json::json!(""));
+    let values = resp.get("values").cloned().unwrap_or(serde_json::json!([]));
+    Ok(Json(serde_json::json!({
+        "address": address,
+        "values": values,
+    })))
+}
+
 // ---- /ws ------------------------------------------------------------------
 
 async fn ws_upgrade(
@@ -260,12 +304,22 @@ pub fn router(state: AppState) -> Router {
         .route_layer(from_fn(origin_guard))
         .route_layer(from_fn_with_state(state.clone(), host_guard));
 
+    // /excel/*: requires excel:com.
+    let excel = Router::new()
+        .route("/excel/workbooks", get(excel_workbooks))
+        .route("/excel/range/read", post(excel_range_read))
+        .route_layer(from_fn(require_excel_com))
+        .route_layer(from_fn_with_state(state.clone(), bearer_guard))
+        .route_layer(from_fn(origin_guard))
+        .route_layer(from_fn_with_state(state.clone(), host_guard));
+
     Router::new()
         .merge(public_open)
         .merge(public_origin)
         .merge(authed)
         .merge(fs)
         .merge(run)
+        .merge(excel)
         .layer(from_fn_with_state(state.clone(), audit_wrap))
         .with_state(state)
 }

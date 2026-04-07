@@ -142,6 +142,10 @@ pub async fn require_run_python(request: Request, next: Next) -> Result<Response
     require_scope(request, next, Scope::RunPython).await
 }
 
+pub async fn require_excel_com(request: Request, next: Next) -> Result<Response, ApiError> {
+    require_scope(request, next, Scope::ExcelCom).await
+}
+
 async fn require_scope(request: Request, next: Next, need: Scope) -> Result<Response, ApiError> {
     let record = request
         .extensions()

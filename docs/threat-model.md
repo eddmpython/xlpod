@@ -157,6 +157,38 @@ New surface introduced after the initial draft and the threats it brings:
   returns garbage / hangs. **Mitigation:** `metadata().is_file()` is
   required; everything else gets `not_a_file`.
 
+### From Phase 6 (`/excel/*` COM routes)
+- **T38.** A token with `excel:com` reads or modifies any workbook
+  the user has open, not just the one the caller "meant". The launcher
+  has no concept of per-workbook scoping in Phase 6 because the COM
+  attach point is global to the running Excel instance.
+  **Mitigation:** the consent dialog (T29) shows the `excel:com`
+  scope at handshake time, the audit log records every call, and a
+  future `fs_roots`-style "approved workbook list" tracked in
+  `granted_workbooks` will land alongside per-workbook isolation in
+  Phase 6.x. Until then `excel:com` is documented as "all open
+  workbooks for this user" and the dialog wording reflects that.
+- **T39.** The launcher trusts whatever the worker's Python returns
+  for `excel_workbooks` / `excel_range_read`; a compromised worker
+  could fabricate workbook contents. **Mitigation:** the worker
+  source is `include_str!`-embedded into the launcher binary and
+  executes inside the same trust boundary as the launcher process
+  itself (T36). The integration tests prove the JSON-RPC framing,
+  but the worker is not a separate trust domain — only the OS user
+  is. This is identical to the `/run/python` posture and is
+  documented under the same "no sandbox" caveat (T32).
+- **T40.** `pywin32` missing or Excel not running degrades to a
+  hard 503 instead of leaking implementation noise. **Mitigation:**
+  the worker explicitly catches `ImportError` and `pywintypes.com_error`
+  and returns a structured `error_code` (`excel_not_available`,
+  `excel_not_running`, `excel_failed`) which the launcher maps to
+  the matching `ApiError` variant. Tests
+  `excel_workbooks_returns_excel_not_available_without_pywin32` and
+  `excel_range_read_returns_excel_not_available_without_pywin32`
+  verify the wire path on a host without pywin32 *or* without an
+  open Excel — both 503s prove every middleware layer was
+  traversed.
+
 ### From Phase 5 (`/run/python` worker)
 - **T32.** Snippet runs as the launcher's user — full access to the
   user account. This is by design (the worker is an execution

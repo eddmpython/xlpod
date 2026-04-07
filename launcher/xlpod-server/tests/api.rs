@@ -345,6 +345,101 @@ async fn run_python_without_scope_is_denied() {
     assert_eq!(body["code"], "scope_denied");
 }
 
+// ---- /excel/* --------------------------------------------------------------
+//
+// Phase 6 Excel tests prove the wire reaches the worker through
+// every middleware layer (host, origin, bearer, scope) and gets a
+// structured response back through the typed JSON-RPC. The exact
+// error code depends on whether the dev/CI box has pywin32 installed
+// (`excel_not_available` if not, `excel_not_running` if pywin32 is
+// there but Excel itself is not open). Both are 503 and both prove
+// the route plumbing works; only a developer running Excel by hand
+// will see a 200 with real workbook data.
+
+fn assert_excel_unavailable(status: reqwest::StatusCode, body: &serde_json::Value) {
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    let code = body["code"].as_str().unwrap_or("");
+    assert!(
+        matches!(code, "excel_not_available" | "excel_not_running"),
+        "expected excel_not_available or excel_not_running, got {code}"
+    );
+}
+
+async fn handshake_with_excel(h: &Harness) -> String {
+    let resp = client()
+        .post(format!("{}/auth/handshake", h.base))
+        .header("Origin", ORIGIN)
+        .header("Host", &h.host_header)
+        .json(&json!({"requested_scopes": ["excel:com"]}))
+        .send()
+        .await
+        .expect("send");
+    let body: serde_json::Value = resp.json().await.expect("json");
+    body["token"].as_str().expect("token").to_string()
+}
+
+#[tokio::test]
+async fn excel_workbooks_returns_excel_not_available_without_pywin32() {
+    let h = spawn().await;
+    let token = handshake_with_excel(&h).await;
+    let resp = client()
+        .get(format!("{}/excel/workbooks", h.base))
+        .header("Origin", ORIGIN)
+        .header("Host", &h.host_header)
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .expect("send");
+    let status = resp.status();
+    let body: serde_json::Value = resp.json().await.expect("json");
+    assert_excel_unavailable(status, &body);
+}
+
+#[tokio::test]
+async fn excel_range_read_returns_excel_not_available_without_pywin32() {
+    let h = spawn().await;
+    let token = handshake_with_excel(&h).await;
+    let resp = client()
+        .post(format!("{}/excel/range/read", h.base))
+        .header("Origin", ORIGIN)
+        .header("Host", &h.host_header)
+        .header("Authorization", format!("Bearer {token}"))
+        .json(&json!({"workbook": "Book1.xlsx", "sheet": "Sheet1", "range": "A1:B2"}))
+        .send()
+        .await
+        .expect("send");
+    let status = resp.status();
+    let body: serde_json::Value = resp.json().await.expect("json");
+    assert_excel_unavailable(status, &body);
+}
+
+#[tokio::test]
+async fn excel_workbooks_without_scope_is_denied() {
+    let h = spawn().await;
+    let resp = client()
+        .post(format!("{}/auth/handshake", h.base))
+        .header("Origin", ORIGIN)
+        .header("Host", &h.host_header)
+        .json(&json!({"requested_scopes": ["run:python"]}))
+        .send()
+        .await
+        .expect("send");
+    let body: serde_json::Value = resp.json().await.expect("json");
+    let token = body["token"].as_str().expect("token").to_string();
+
+    let resp = client()
+        .get(format!("{}/excel/workbooks", h.base))
+        .header("Origin", ORIGIN)
+        .header("Host", &h.host_header)
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .expect("send");
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let body: serde_json::Value = resp.json().await.expect("json");
+    assert_eq!(body["code"], "scope_denied");
+}
+
 // ---- /fs/read --------------------------------------------------------------
 
 async fn handshake_with_fs_root(h: &Harness, root: &std::path::Path) -> String {

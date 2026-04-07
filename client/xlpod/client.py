@@ -25,7 +25,15 @@ from ._proto import (
     PROTO,
 )
 from ._transport import Transport, TransportResponse, autodetect
-from .models import FileContent, Handshake, Health, RunResult, Version
+from .models import (
+    FileContent,
+    Handshake,
+    Health,
+    RangeData,
+    RunResult,
+    Version,
+    Workbook,
+)
 
 
 class AsyncClient:
@@ -109,6 +117,46 @@ class AsyncClient:
             stderr=str(data.get("stderr", "")),
             result=data.get("result"),
             error=data.get("error"),
+        )
+
+    async def list_workbooks(self) -> List[Workbook]:
+        """List workbooks open in the running Excel instance.
+
+        Requires the ``excel:com`` scope. Raises ``ExcelNotAvailable``
+        if the worker's Python lacks ``pywin32``, or ``ExcelNotRunning``
+        if Excel is not currently open.
+        """
+        data = await self._request("GET", "/excel/workbooks", auth=True)
+        raw = data.get("workbooks") or []
+        out: List[Workbook] = []
+        for entry in raw:
+            if not isinstance(entry, dict):
+                continue
+            out.append(
+                Workbook(
+                    name=str(entry.get("name", "")),
+                    path=str(entry.get("path", "")),
+                    full_name=str(entry.get("full_name", "")),
+                )
+            )
+        return out
+
+    async def read_range(
+        self, *, workbook: str, sheet: str, range: str
+    ) -> RangeData:
+        """Read a range from an open workbook via Excel COM."""
+        body = {"workbook": workbook, "sheet": sheet, "range": range}
+        data = await self._request("POST", "/excel/range/read", json_body=body, auth=True)
+        raw_values = data.get("values") or []
+        normalized: List[List[object]] = []
+        for row in raw_values:
+            if isinstance(row, list):
+                normalized.append(list(row))
+            else:
+                normalized.append([row])
+        return RangeData(
+            address=str(data.get("address", "")),
+            values=normalized,
         )
 
     async def read_file(self, path: str) -> FileContent:
@@ -253,6 +301,14 @@ class Client:
 
     def run_python(self, code: str) -> RunResult:
         return self._run(self._async.run_python(code))
+
+    def list_workbooks(self) -> List[Workbook]:
+        return self._run(self._async.list_workbooks())
+
+    def read_range(self, *, workbook: str, sheet: str, range: str) -> RangeData:
+        return self._run(
+            self._async.read_range(workbook=workbook, sheet=sheet, range=range)
+        )
 
     def close(self) -> None:
         if self._loop is None:

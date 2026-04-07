@@ -33,6 +33,7 @@
 use std::{process::Stdio, sync::Arc, time::Duration};
 
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::{Child, ChildStdin, ChildStdout, Command},
@@ -49,18 +50,6 @@ const WORKER_SOURCE: &str = include_str!("worker/python_worker.py");
 /// Default wall-clock cap per `/run/python` call. The integration
 /// tests override this with a much smaller value via [`PythonWorker::with_timeout`].
 pub const DEFAULT_TIMEOUT_MS: u64 = 30_000;
-
-#[derive(Debug, Serialize)]
-struct Request<'a> {
-    id: u64,
-    method: &'static str,
-    params: ExecParams<'a>,
-}
-
-#[derive(Debug, Serialize)]
-struct ExecParams<'a> {
-    code: &'a str,
-}
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ExecResult {
@@ -101,7 +90,11 @@ impl PythonWorker {
         }
     }
 
-    pub async fn exec(&self, code: &str) -> Result<ExecResult, ApiError> {
+    /// Generic JSON-RPC call. Used by every typed wrapper below.
+    /// `params` is a `serde_json::Value` so callers can build any
+    /// shape the worker dispatch expects without inventing a new
+    /// Rust type per method.
+    pub async fn call(&self, method: &str, params: Value) -> Result<Value, ApiError> {
         let mut guard = self.inner.lock().await;
 
         // (Re)spawn if we have no live worker.
@@ -109,10 +102,10 @@ impl PythonWorker {
             *guard = Some(spawn_worker().await?);
         }
 
-        // The expects in this function are guarded by the `is_none`
-        // branch above and the `*guard = None` resets on every error
-        // path; the only way to reach them is right after a successful
-        // spawn or while still holding a previously-good worker.
+        // The expects below are guarded by the `is_none` branch above
+        // and the `*guard = None` resets on every error path; the
+        // only way to reach them is right after a successful spawn or
+        // while still holding a previously-good worker.
         #[allow(clippy::expect_used)]
         let id = {
             let inner = guard.as_mut().expect("worker present after spawn check");
@@ -121,11 +114,7 @@ impl PythonWorker {
             id
         };
 
-        let req = Request {
-            id,
-            method: "exec",
-            params: ExecParams { code },
-        };
+        let req = json!({"id": id, "method": method, "params": params});
         let mut line = serde_json::to_string(&req).map_err(|_| ApiError::Internal)?;
         line.push('\n');
 
@@ -151,7 +140,7 @@ impl PythonWorker {
                 Err(ApiError::WorkerCrashed)
             }
             Ok(Ok(_)) => {
-                let parsed: ExecResult =
+                let parsed: Value =
                     serde_json::from_str(buf.trim()).map_err(|_| ApiError::Internal)?;
                 Ok(parsed)
             }
@@ -170,6 +159,34 @@ impl PythonWorker {
                 Err(ApiError::WorkerTimeout)
             }
         }
+    }
+
+    pub async fn exec(&self, code: &str) -> Result<ExecResult, ApiError> {
+        let value = self.call("exec", json!({"code": code})).await?;
+        serde_json::from_value(value).map_err(|_| ApiError::Internal)
+    }
+
+    /// Helper used by every Excel route: send the request, then
+    /// translate the worker's structured `error_code` (if any) into
+    /// the matching `ApiError` variant. Returns the raw JSON value on
+    /// success so the route handler can pull out method-specific
+    /// fields.
+    pub async fn excel_call(&self, method: &str, params: Value) -> Result<Value, ApiError> {
+        let resp = self.call(method, params).await?;
+        if resp
+            .get("ok")
+            .and_then(Value::as_bool)
+            .map(|b| !b)
+            .unwrap_or(false)
+        {
+            let code = resp.get("error_code").and_then(Value::as_str).unwrap_or("");
+            return Err(match code {
+                "excel_not_available" => ApiError::ExcelNotAvailable,
+                "excel_not_running" => ApiError::ExcelNotRunning,
+                _ => ApiError::ExcelFailed,
+            });
+        }
+        Ok(resp)
     }
 }
 

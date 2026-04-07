@@ -32,6 +32,72 @@ def _send(payload):
     sys.stdout.flush()
 
 
+def _try_excel_app():
+    # pywin32 is Windows-only and not in the worker's interpreter on
+    # most dev / CI machines. Surfacing the missing-dependency case as
+    # a structured error_code lets the launcher map it to the proto
+    # 503 `excel_not_available` instead of crashing the worker.
+    try:
+        import win32com.client  # type: ignore
+    except Exception as e:
+        return {"ok": False, "error_code": "excel_not_available", "message": str(e)}
+    try:
+        app = win32com.client.GetActiveObject("Excel.Application")
+        return {"ok": True, "app": app}
+    except Exception as e:
+        return {"ok": False, "error_code": "excel_not_running", "message": str(e)}
+
+
+def _excel_workbooks():
+    got = _try_excel_app()
+    if not got["ok"]:
+        return got
+    app = got["app"]
+    try:
+        wbs = []
+        for wb in app.Workbooks:
+            wbs.append(
+                {
+                    "name": wb.Name,
+                    "path": wb.Path or "",
+                    "full_name": wb.FullName,
+                }
+            )
+        return {"ok": True, "workbooks": wbs}
+    except Exception as e:
+        return {"ok": False, "error_code": "excel_failed", "message": str(e)}
+
+
+def _excel_range_read(workbook, sheet, address):
+    got = _try_excel_app()
+    if not got["ok"]:
+        return got
+    app = got["app"]
+    try:
+        wb = app.Workbooks(workbook) if workbook else app.ActiveWorkbook
+        sh = wb.Worksheets(sheet) if sheet else wb.ActiveSheet
+        rng = sh.Range(address)
+        val = rng.Value
+        # COM returns tuples-of-tuples for multi-cell ranges and a
+        # scalar for single cells. Normalize so the wire shape is
+        # always 2-D.
+        if val is None:
+            values = [[None]]
+        elif isinstance(val, tuple):
+            normalized = []
+            for row in val:
+                if isinstance(row, tuple):
+                    normalized.append(list(row))
+                else:
+                    normalized.append([row])
+            values = normalized
+        else:
+            values = [[val]]
+        return {"ok": True, "address": str(rng.Address), "values": values}
+    except Exception as e:
+        return {"ok": False, "error_code": "excel_failed", "message": str(e)}
+
+
 def _exec(code):
     out = io.StringIO()
     err = io.StringIO()
@@ -80,6 +146,18 @@ def _main():
             _send({"id": rid, "ok": True})
         elif method == "exec":
             payload = _exec(params.get("code", ""))
+            payload["id"] = rid
+            _send(payload)
+        elif method == "excel_workbooks":
+            payload = _excel_workbooks()
+            payload["id"] = rid
+            _send(payload)
+        elif method == "excel_range_read":
+            payload = _excel_range_read(
+                params.get("workbook", ""),
+                params.get("sheet", ""),
+                params.get("range", ""),
+            )
             payload["id"] = rid
             _send(payload)
         elif method == "shutdown":

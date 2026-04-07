@@ -102,6 +102,18 @@ class WorkerCrashed(XlpodError):
     """Worker process died mid-call."""
 
 
+class ExcelNotAvailable(XlpodError):
+    """The worker's Python does not have ``pywin32`` installed."""
+
+
+class ExcelNotRunning(XlpodError):
+    """No running Excel instance to attach to."""
+
+
+class ExcelFailed(XlpodError):
+    """Excel COM call raised an exception."""
+
+
 _CODE_MAP: dict[str, type[XlpodError]] = {
     "origin_not_allowed": OriginNotAllowed,
     "host_not_allowed": HostNotAllowed,
@@ -118,6 +130,9 @@ _CODE_MAP: dict[str, type[XlpodError]] = {
     "worker_spawn_failed": WorkerSpawnFailed,
     "worker_timeout": WorkerTimeout,
     "worker_crashed": WorkerCrashed,
+    "excel_not_available": ExcelNotAvailable,
+    "excel_not_running": ExcelNotRunning,
+    "excel_failed": ExcelFailed,
 }
 
 

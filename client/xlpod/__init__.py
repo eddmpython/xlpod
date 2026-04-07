@@ -12,6 +12,9 @@ from .client import AsyncClient, Client
 from .errors import (
     BadRequest,
     ConsentDenied,
+    ExcelFailed,
+    ExcelNotAvailable,
+    ExcelNotRunning,
     ForbiddenPath,
     HostNotAllowed,
     LauncherUnreachable,
@@ -28,7 +31,15 @@ from .errors import (
     WorkerTimeout,
     XlpodError,
 )
-from .models import FileContent, Handshake, Health, RunResult, Version
+from .models import (
+    FileContent,
+    Handshake,
+    Health,
+    RangeData,
+    RunResult,
+    Version,
+    Workbook,
+)
 
 __version__ = "0.0.0"
 
@@ -39,6 +50,9 @@ __all__ = [
     "ConsentDenied",
     "DEFAULT_BASE_URL",
     "DEFAULT_ORIGIN",
+    "ExcelFailed",
+    "ExcelNotAvailable",
+    "ExcelNotRunning",
     "FileContent",
     "ForbiddenPath",
     "Handshake",
@@ -50,12 +64,14 @@ __all__ = [
     "PROTO",
     "PathNotFound",
     "PathTooLarge",
+    "RangeData",
     "RateLimited",
     "ReservedScope",
     "RunResult",
     "ScopeDenied",
     "Unauthorized",
     "Version",
+    "Workbook",
     "WorkerCrashed",
     "WorkerSpawnFailed",
     "WorkerTimeout",

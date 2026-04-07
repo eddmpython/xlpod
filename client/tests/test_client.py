@@ -183,6 +183,79 @@ def test_sync_client_health_round_trip() -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_workbooks_parses_response_into_dataclasses() -> None:
+    transport = FakeTransport(
+        [
+            _ok({"token": "a" * 64, "granted_scopes": ["excel:com"], "expires_in": 3600}),
+            _ok(
+                {
+                    "workbooks": [
+                        {"name": "Book1.xlsx", "path": "C:/tmp", "full_name": "C:/tmp/Book1.xlsx"},
+                        {"name": "Empty.xlsx", "path": "", "full_name": "Empty.xlsx"},
+                    ]
+                }
+            ),
+        ]
+    )
+    client = xlpod.AsyncClient(transport=transport)
+    await client.handshake(scopes=["excel:com"])
+    wbs = await client.list_workbooks()
+    assert len(wbs) == 2
+    assert isinstance(wbs[0], xlpod.Workbook)
+    assert wbs[0].name == "Book1.xlsx"
+    assert wbs[1].path == ""
+
+
+@pytest.mark.asyncio
+async def test_list_workbooks_excel_not_available_maps_to_specific_exception() -> None:
+    transport = FakeTransport(
+        [
+            _ok({"token": "b" * 64, "granted_scopes": ["excel:com"], "expires_in": 3600}),
+            _err(503, "excel_not_available", hint="pip install pywin32"),
+        ]
+    )
+    client = xlpod.AsyncClient(transport=transport)
+    await client.handshake(scopes=["excel:com"])
+    with pytest.raises(xlpod.ExcelNotAvailable):
+        await client.list_workbooks()
+
+
+@pytest.mark.asyncio
+async def test_read_range_returns_2d_values_and_address() -> None:
+    transport = FakeTransport(
+        [
+            _ok({"token": "c" * 64, "granted_scopes": ["excel:com"], "expires_in": 3600}),
+            _ok(
+                {
+                    "address": "$A$1:$B$2",
+                    "values": [[1, "two"], [3.0, None]],
+                }
+            ),
+        ]
+    )
+    client = xlpod.AsyncClient(transport=transport)
+    await client.handshake(scopes=["excel:com"])
+    rng = await client.read_range(workbook="Book1.xlsx", sheet="Sheet1", range="A1:B2")
+    assert isinstance(rng, xlpod.RangeData)
+    assert rng.address == "$A$1:$B$2"
+    assert rng.values == [[1, "two"], [3.0, None]]
+
+
+@pytest.mark.asyncio
+async def test_read_range_excel_not_running_maps_to_specific_exception() -> None:
+    transport = FakeTransport(
+        [
+            _ok({"token": "d" * 64, "granted_scopes": ["excel:com"], "expires_in": 3600}),
+            _err(503, "excel_not_running"),
+        ]
+    )
+    client = xlpod.AsyncClient(transport=transport)
+    await client.handshake(scopes=["excel:com"])
+    with pytest.raises(xlpod.ExcelNotRunning):
+        await client.read_range(workbook="Book1.xlsx", sheet="Sheet1", range="A1")
+
+
+@pytest.mark.asyncio
 async def test_run_python_happy_returns_result_dataclass() -> None:
     transport = FakeTransport(
         [

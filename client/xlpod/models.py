@@ -50,6 +50,25 @@ class RunResult:
 
 
 @dataclass(frozen=True)
+class Workbook:
+    name: str
+    path: str
+    full_name: str
+
+
+@dataclass(frozen=True)
+class RangeData:
+    """Result of ``/excel/range/read``.
+
+    ``values`` is always a 2-D list — single cells come back as
+    ``[[value]]`` so callers can iterate uniformly.
+    """
+
+    address: str
+    values: List[List[object]]
+
+
+@dataclass(frozen=True)
 class FileContent:
     """Result of a successful ``/fs/read`` call.
 

@@ -27,7 +27,11 @@ options that exist get turned on.
 5. **Scoped permissions.** Tokens carry the minimum scopes:
    `fs:read`, `fs:write`, `run:python`, `excel:com`,
    and (reserved for future) `ai:provider:call`, `ai:codegen:write`,
-   `ai:exec:python`.
+   `ai:exec:python`. Filesystem scopes are *additionally* bound to a
+   closed set of canonicalized `fs_roots` chosen at handshake time;
+   `/fs/read` rejects any path that does not lie under one of them.
+   A future tray consent dialog (Phase 4) will prompt the user before
+   issuing a token that carries `fs_roots`.
 6. **User consent.** Sensitive operations require an explicit, fresh
    tray confirmation. Consent grants narrow scopes to one token.
 7. **DNS-rebinding defense.** The `Host` header must equal

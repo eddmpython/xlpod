@@ -173,6 +173,100 @@ def test_sync_client_health_round_trip() -> None:
     assert transport.closed is True
 
 
+@pytest.mark.asyncio
+async def test_read_file_decodes_base64_and_records_query() -> None:
+    import base64
+
+    payload = b"hello, xlpod"
+    encoded = base64.b64encode(payload).decode("ascii")
+    transport = FakeTransport(
+        [
+            _ok(
+                {
+                    "token": "f" * 64,
+                    "granted_scopes": ["fs:read"],
+                    "granted_fs_roots": ["/tmp"],
+                    "expires_in": 3600,
+                }
+            ),
+            _ok(
+                {
+                    "path": "/tmp/hello.txt",
+                    "size": len(payload),
+                    "encoding": "base64",
+                    "content": encoded,
+                }
+            ),
+        ]
+    )
+    client = xlpod.AsyncClient(transport=transport)
+    h = await client.handshake(scopes=["fs:read"], fs_roots=["/tmp"])
+    assert h.granted_fs_roots == ["/tmp"]
+
+    file = await client.read_file("/tmp/hello.txt")
+    assert isinstance(file, xlpod.FileContent)
+    assert file.size == 12
+    assert file.content_bytes == payload
+    assert file.encoding == "base64"
+
+    handshake_call, read_call = transport.recorded
+    assert handshake_call.json_body == {
+        "requested_scopes": ["fs:read"],
+        "fs_roots": ["/tmp"],
+    }
+    assert "/fs/read?path=" in read_call.url
+    assert read_call.headers["Authorization"] == f"Bearer {'f' * 64}"
+
+
+@pytest.mark.asyncio
+async def test_read_file_forbidden_path_maps_to_specific_exception() -> None:
+    transport = FakeTransport(
+        [
+            _ok(
+                {
+                    "token": "1" * 64,
+                    "granted_scopes": ["fs:read"],
+                    "granted_fs_roots": ["/tmp"],
+                    "expires_in": 3600,
+                }
+            ),
+            _err(403, "forbidden_path", hint="widen fs_roots"),
+        ]
+    )
+    client = xlpod.AsyncClient(transport=transport)
+    await client.handshake(scopes=["fs:read"], fs_roots=["/tmp"])
+    with pytest.raises(xlpod.ForbiddenPath) as ei:
+        await client.read_file("/etc/passwd")
+    assert ei.value.code == "forbidden_path"
+
+
+@pytest.mark.asyncio
+async def test_read_file_size_and_not_a_file_map_to_specific_exceptions() -> None:
+    transport = FakeTransport(
+        [
+            _ok(
+                {
+                    "token": "2" * 64,
+                    "granted_scopes": ["fs:read"],
+                    "granted_fs_roots": ["/tmp"],
+                    "expires_in": 3600,
+                }
+            ),
+            _err(400, "path_too_large"),
+            _err(404, "not_a_file"),
+            _err(404, "path_not_found"),
+        ]
+    )
+    client = xlpod.AsyncClient(transport=transport)
+    await client.handshake(scopes=["fs:read"], fs_roots=["/tmp"])
+    with pytest.raises(xlpod.PathTooLarge):
+        await client.read_file("/tmp/big.bin")
+    with pytest.raises(xlpod.NotAFile):
+        await client.read_file("/tmp/dir")
+    with pytest.raises(xlpod.PathNotFound):
+        await client.read_file("/tmp/missing")
+
+
 def test_sync_client_handshake_then_version() -> None:
     token = "a" * 64
     transport = FakeTransport(

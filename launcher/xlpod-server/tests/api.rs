@@ -125,7 +125,9 @@ async fn handshake_rejects_reserved_scopes() {
 #[tokio::test]
 async fn handshake_issues_token() {
     let h = spawn().await;
-    let resp = handshake(&h, json!(["fs:read", "run:python"])).await;
+    // run:python does not require fs_roots, so this exercises the
+    // generic handshake path without dragging in Phase 3 setup.
+    let resp = handshake(&h, json!(["run:python"])).await;
     assert_eq!(resp.status(), StatusCode::OK);
     let body: serde_json::Value = resp.json().await.expect("json");
     let token = body["token"].as_str().expect("token string");
@@ -152,7 +154,7 @@ async fn version_requires_token() {
 #[tokio::test]
 async fn version_with_valid_token() {
     let h = spawn().await;
-    let hs: serde_json::Value = handshake(&h, json!(["fs:read"]))
+    let hs: serde_json::Value = handshake(&h, json!(["run:python"]))
         .await
         .json()
         .await
@@ -188,10 +190,204 @@ async fn version_with_unknown_token() {
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
 
+// ---- /fs/read --------------------------------------------------------------
+
+async fn handshake_with_fs_root(h: &Harness, root: &std::path::Path) -> String {
+    let resp = client()
+        .post(format!("{}/auth/handshake", h.base))
+        .header("Origin", ORIGIN)
+        .header("Host", &h.host_header)
+        .json(&json!({
+            "requested_scopes": ["fs:read"],
+            "fs_roots": [root.to_string_lossy()],
+        }))
+        .send()
+        .await
+        .expect("send");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: serde_json::Value = resp.json().await.expect("json");
+    body["token"].as_str().expect("token").to_string()
+}
+
+#[tokio::test]
+async fn fs_read_handshake_without_root_is_rejected() {
+    let h = spawn().await;
+    let resp = client()
+        .post(format!("{}/auth/handshake", h.base))
+        .header("Origin", ORIGIN)
+        .header("Host", &h.host_header)
+        .json(&json!({"requested_scopes": ["fs:read"], "fs_roots": []}))
+        .send()
+        .await
+        .expect("send");
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = resp.json().await.expect("json");
+    assert_eq!(body["code"], "bad_request");
+}
+
+#[tokio::test]
+async fn fs_read_returns_file_under_root() {
+    let h = spawn().await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let target = dir.path().join("hello.txt");
+    std::fs::write(&target, b"hello, xlpod").expect("write");
+    let token = handshake_with_fs_root(&h, dir.path()).await;
+
+    let resp = client()
+        .get(format!("{}/fs/read", h.base))
+        .query(&[("path", target.to_string_lossy().as_ref())])
+        .header("Origin", ORIGIN)
+        .header("Host", &h.host_header)
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .expect("send");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: serde_json::Value = resp.json().await.expect("json");
+    assert_eq!(body["encoding"], "base64");
+    assert_eq!(body["size"], 12);
+    use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+    let decoded = B64
+        .decode(body["content"].as_str().expect("content"))
+        .expect("base64");
+    assert_eq!(decoded, b"hello, xlpod");
+}
+
+#[tokio::test]
+async fn fs_read_outside_root_is_forbidden() {
+    let h = spawn().await;
+    let allowed = tempfile::tempdir().expect("tempdir1");
+    let other = tempfile::tempdir().expect("tempdir2");
+    let outside = other.path().join("secret.txt");
+    std::fs::write(&outside, b"top secret").expect("write");
+    let token = handshake_with_fs_root(&h, allowed.path()).await;
+
+    let resp = client()
+        .get(format!("{}/fs/read", h.base))
+        .query(&[("path", outside.to_string_lossy().as_ref())])
+        .header("Origin", ORIGIN)
+        .header("Host", &h.host_header)
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .expect("send");
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let body: serde_json::Value = resp.json().await.expect("json");
+    assert_eq!(body["code"], "forbidden_path");
+}
+
+#[tokio::test]
+async fn fs_read_traversal_is_caught_by_canonicalize() {
+    // ../ escape attempts canonicalize before the root check, so a
+    // path like /allowed/../other/secret resolves to /other/secret
+    // and fails the starts_with(allowed) check.
+    let h = spawn().await;
+    let allowed = tempfile::tempdir().expect("tempdir1");
+    let other = tempfile::tempdir().expect("tempdir2");
+    let outside = other.path().join("secret.txt");
+    std::fs::write(&outside, b"top secret").expect("write");
+    let token = handshake_with_fs_root(&h, allowed.path()).await;
+
+    let traversal = allowed.path().join("..").join(
+        other
+            .path()
+            .file_name()
+            .expect("dirname")
+            .to_string_lossy()
+            .to_string(),
+    );
+    let traversal = traversal.join("secret.txt");
+
+    let resp = client()
+        .get(format!("{}/fs/read", h.base))
+        .query(&[("path", traversal.to_string_lossy().as_ref())])
+        .header("Origin", ORIGIN)
+        .header("Host", &h.host_header)
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .expect("send");
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn fs_read_missing_file_is_404() {
+    let h = spawn().await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let token = handshake_with_fs_root(&h, dir.path()).await;
+    let resp = client()
+        .get(format!("{}/fs/read", h.base))
+        .query(&[(
+            "path",
+            dir.path().join("nope.txt").to_string_lossy().as_ref(),
+        )])
+        .header("Origin", ORIGIN)
+        .header("Host", &h.host_header)
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .expect("send");
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    let body: serde_json::Value = resp.json().await.expect("json");
+    assert_eq!(body["code"], "path_not_found");
+}
+
+#[tokio::test]
+async fn fs_read_directory_is_not_a_file() {
+    let h = spawn().await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let token = handshake_with_fs_root(&h, dir.path()).await;
+    let resp = client()
+        .get(format!("{}/fs/read", h.base))
+        .query(&[("path", dir.path().to_string_lossy().as_ref())])
+        .header("Origin", ORIGIN)
+        .header("Host", &h.host_header)
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .expect("send");
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    let body: serde_json::Value = resp.json().await.expect("json");
+    assert_eq!(body["code"], "not_a_file");
+}
+
+#[tokio::test]
+async fn fs_read_without_scope_is_denied() {
+    let h = spawn().await;
+    // Issue a token WITHOUT fs:read.
+    let resp = client()
+        .post(format!("{}/auth/handshake", h.base))
+        .header("Origin", ORIGIN)
+        .header("Host", &h.host_header)
+        .json(&json!({"requested_scopes": ["run:python"]}))
+        .send()
+        .await
+        .expect("send");
+    let body: serde_json::Value = resp.json().await.expect("json");
+    let token = body["token"].as_str().expect("token").to_string();
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let target = dir.path().join("x.txt");
+    std::fs::write(&target, b"x").expect("write");
+
+    let resp = client()
+        .get(format!("{}/fs/read", h.base))
+        .query(&[("path", target.to_string_lossy().as_ref())])
+        .header("Origin", ORIGIN)
+        .header("Host", &h.host_header)
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .expect("send");
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let body: serde_json::Value = resp.json().await.expect("json");
+    assert_eq!(body["code"], "scope_denied");
+}
+
 #[tokio::test]
 async fn version_with_bad_host_after_auth() {
     let h = spawn().await;
-    let hs: serde_json::Value = handshake(&h, json!(["fs:read"]))
+    let hs: serde_json::Value = handshake(&h, json!(["run:python"]))
         .await
         .json()
         .await

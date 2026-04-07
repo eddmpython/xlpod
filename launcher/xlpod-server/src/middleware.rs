@@ -125,34 +125,31 @@ pub async fn bearer_guard(
     Ok(response)
 }
 
-// ---- 4. scope guard (constructor returns a per-route middleware fn) -------
+// ---- 4. scope guards ------------------------------------------------------
+//
+// Per-scope async middleware functions. Each one extracts the
+// `TokenRecordExt` that `bearer_guard` inserts and checks for the
+// required scope. Phase 3 lands `require_fs_read`; siblings will be
+// added next to it as new routes need them. Keeping one function per
+// scope avoids the lifetime gymnastics a generic constructor needs and
+// makes the route table read like English.
 
-/// Build a scope-checking middleware for a specific required scope set.
-/// Used as `axum::middleware::from_fn(require_scopes(&[Scope::FsRead]))`.
-#[allow(dead_code)] // wired up by per-route guards in Phase 1.x
-pub fn require_scopes(required: &'static [Scope]) -> impl Clone + Fn(Request, Next) -> ScopeFuture {
-    move |request: Request, next: Next| {
-        let required = required;
-        Box::pin(async move {
-            let record = request
-                .extensions()
-                .get::<TokenRecordExt>()
-                .ok_or(ApiError::Unauthorized)?
-                .0
-                .clone();
-            for need in required {
-                if !record.scopes.iter().any(|s| s == need) {
-                    return Err(ApiError::ScopeDenied);
-                }
-            }
-            Ok::<Response, ApiError>(next.run(request).await)
-        })
-    }
+pub async fn require_fs_read(request: Request, next: Next) -> Result<Response, ApiError> {
+    require_scope(request, next, Scope::FsRead).await
 }
 
-#[allow(dead_code)] // paired with require_scopes above
-pub type ScopeFuture =
-    std::pin::Pin<Box<dyn std::future::Future<Output = Result<Response, ApiError>> + Send>>;
+async fn require_scope(request: Request, next: Next, need: Scope) -> Result<Response, ApiError> {
+    let record = request
+        .extensions()
+        .get::<TokenRecordExt>()
+        .ok_or(ApiError::Unauthorized)?
+        .0
+        .clone();
+    if !record.scopes.contains(&need) {
+        return Err(ApiError::ScopeDenied);
+    }
+    Ok(next.run(request).await)
+}
 
 // ---- helpers --------------------------------------------------------------
 

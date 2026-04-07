@@ -76,17 +76,31 @@ def main() -> int:
         print(f"using CA bundle: {ca_bundle}")
         verify = str(ca_bundle)
 
+    repo_root = Path(__file__).resolve().parents[1]
+
     try:
         with xlpod.Client(verify=verify) as client:
             health = client.health()
             print(f"  health    -> status={health.status} launcher={health.launcher} proto={health.proto}")
 
-            handshake = client.handshake(scopes=["fs:read"])
+            handshake = client.handshake(
+                scopes=["fs:read"],
+                fs_roots=[str(repo_root)],
+            )
             token_id = handshake.token[:8]
-            print(f"  handshake -> token_id={token_id}.. scopes={handshake.granted_scopes} expires_in={handshake.expires_in}")
+            print(f"  handshake -> token_id={token_id}.. scopes={handshake.granted_scopes} roots={len(handshake.granted_fs_roots)} expires_in={handshake.expires_in}")
 
             version = client.version()
             print(f"  version   -> launcher={version.launcher} proto={version.proto}")
+
+            # Read a real file from the repo to prove the fs:read path
+            # works end to end. README.md is the obvious choice.
+            target = repo_root / "README.md"
+            if not target.exists():
+                target = repo_root / "client" / "README.md"
+            content = client.read_file(str(target))
+            preview = content.content_bytes[:60].decode("utf-8", errors="replace")
+            print(f"  fs.read   -> path={Path(content.path).name} size={content.size} preview={preview!r}")
     except xlpod.LauncherUnreachable as e:
         print(f"FAIL: {e}", file=sys.stderr)
         print("hint: start the launcher with `cargo run -p xlpod-server`", file=sys.stderr)

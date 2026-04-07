@@ -21,6 +21,10 @@ pub fn allowed_hosts() -> [String; 2] {
 /// Per-token rate limit. Mirrors `info.x-xlpod-rate-limit.per_token_rps`.
 pub const RATE_LIMIT_PER_SEC: u32 = 100;
 
+/// Maximum bytes the `/fs/read` route will return in a single response.
+/// Phase 3 = 10 MiB. Larger files require a streaming follow-up route.
+pub const FS_READ_MAX_BYTES: u64 = 10 * 1024 * 1024;
+
 /// Token lifetime. A new token is issued at every launcher start; this
 /// caps how long a single token survives even if the launcher keeps
 /// running. Phase 1.2 default; tray consent flow may shorten in Phase 1.3.

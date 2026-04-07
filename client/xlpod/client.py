@@ -12,8 +12,9 @@ Two surfaces:
 from __future__ import annotations
 
 import asyncio
+import base64
 import sys
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Optional, Sequence
 
 from . import errors
 from ._proto import (
@@ -24,7 +25,7 @@ from ._proto import (
     PROTO,
 )
 from ._transport import Transport, TransportResponse, autodetect
-from .models import Handshake, Health, Version
+from .models import FileContent, Handshake, Health, Version
 
 
 class AsyncClient:
@@ -62,12 +63,20 @@ class AsyncClient:
         data = await self._request("GET", "/health", auth=False)
         return Health(status=data["status"], launcher=data["launcher"], proto=data["proto"])
 
-    async def handshake(self, *, scopes: Iterable[str]) -> Handshake:
-        body = {"requested_scopes": list(scopes)}
+    async def handshake(
+        self,
+        *,
+        scopes: Iterable[str],
+        fs_roots: Optional[Sequence[str]] = None,
+    ) -> Handshake:
+        body: dict[str, Any] = {"requested_scopes": list(scopes)}
+        if fs_roots is not None:
+            body["fs_roots"] = list(fs_roots)
         data = await self._request("POST", "/auth/handshake", json_body=body, auth=False)
         h = Handshake(
             token=data["token"],
             granted_scopes=list(data.get("granted_scopes", [])),
+            granted_fs_roots=list(data.get("granted_fs_roots", [])),
             expires_in=int(data.get("expires_in", 0)),
         )
         self._token = h.token
@@ -76,6 +85,37 @@ class AsyncClient:
     async def version(self) -> Version:
         data = await self._request("GET", "/launcher/version", auth=True)
         return Version(launcher=data["launcher"], proto=data["proto"])
+
+    async def read_file(self, path: str) -> FileContent:
+        """Read a file under one of the token's approved fs roots.
+
+        Requires the ``fs:read`` scope and at least one ``fs_roots``
+        entry attached to the token at handshake time. The launcher
+        canonicalizes the path, verifies it lies under an approved
+        root, and rejects directories, oversized files, and missing
+        paths with the corresponding ``XlpodError`` subclass.
+        """
+        data = await self._request(
+            "GET",
+            "/fs/read",
+            query={"path": path},
+            auth=True,
+        )
+        encoding = str(data.get("encoding", ""))
+        raw = str(data.get("content", ""))
+        if encoding == "base64":
+            content_bytes = base64.b64decode(raw)
+        else:
+            # Forward-compatible: future encodings stay openable as a
+            # raw string for callers that recognize them.
+            content_bytes = raw.encode("utf-8")
+        return FileContent(
+            path=str(data.get("path", "")),
+            size=int(data.get("size", 0)),
+            encoding=encoding,
+            content=raw,
+            content_bytes=content_bytes,
+        )
 
     async def aclose(self) -> None:
         await self._transport.aclose()
@@ -94,6 +134,7 @@ class AsyncClient:
         path: str,
         *,
         json_body: Optional[object] = None,
+        query: Optional[dict[str, str]] = None,
         auth: bool,
     ) -> dict:
         headers = {
@@ -105,6 +146,10 @@ class AsyncClient:
                 raise errors.Unauthorized("no token; call handshake() first")
             headers["Authorization"] = f"Bearer {self._token}"
         url = self._base_url + path
+        if query:
+            from urllib.parse import urlencode
+
+            url = f"{url}?{urlencode(query)}"
         resp: TransportResponse = await self._transport.request(
             method, url, headers=headers, json_body=json_body
         )
@@ -167,11 +212,19 @@ class Client:
     def health(self) -> Health:
         return self._run(self._async.health())
 
-    def handshake(self, *, scopes: Iterable[str]) -> Handshake:
-        return self._run(self._async.handshake(scopes=scopes))
+    def handshake(
+        self,
+        *,
+        scopes: Iterable[str],
+        fs_roots: Optional[Sequence[str]] = None,
+    ) -> Handshake:
+        return self._run(self._async.handshake(scopes=scopes, fs_roots=fs_roots))
 
     def version(self) -> Version:
         return self._run(self._async.version())
+
+    def read_file(self, path: str) -> FileContent:
+        return self._run(self._async.read_file(path))
 
     def close(self) -> None:
         if self._loop is None:

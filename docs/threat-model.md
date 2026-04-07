@@ -123,6 +123,40 @@ New surface introduced after the initial draft and the threats it brings:
   that calls `process::exit(1)` so a dead server cannot present a
   green tray.
 
+### From Phase 3 (`fs:read` scoped route)
+- **T23.** Token with `fs:read` reads a file outside the user's intent.
+  **Mitigation:** the token is bound at handshake time to a *closed
+  set* of canonicalized `fs_roots`; every `/fs/read` call canonicalizes
+  the requested path and rejects with `forbidden_path` if it does not
+  start with one of the granted roots. The roots are canonicalized
+  when the token is issued so a later symlink swap cannot widen them.
+- **T24.** Path traversal via `..` segments. **Mitigation:** the
+  handler does **not** parse for `..` strings (which is fragile);
+  instead it calls `std::fs::canonicalize` first, which resolves the
+  path against the real filesystem. The resulting absolute path is
+  then compared against the canonicalized roots. A request like
+  `/allowed/../other/secret` resolves to `/other/secret` and fails the
+  `starts_with(allowed)` check. Covered by
+  `fs_read_traversal_is_caught_by_canonicalize` in the integration
+  tests.
+- **T25.** Memory exhaustion via a multi-gigabyte file. **Mitigation:**
+  `fs::metadata().len()` is checked against `FS_READ_MAX_BYTES`
+  (10 MiB) *before* the read; oversized files return `path_too_large`
+  without ever allocating a buffer. A streaming follow-up route will
+  land alongside `/fs/list` for legitimate large reads.
+- **T26.** Token with `fs:read` scope but no fs roots is silently
+  useless and the caller does not learn until the first 403.
+  **Mitigation:** `/auth/handshake` returns `bad_request` when
+  `fs:read` is requested with an empty (or all-invalid) `fs_roots`
+  list, so misconfiguration is caught at issue time.
+- **T27.** Symlink swap after canonicalize but before read (TOCTOU).
+  **Mitigation accepted:** Phase 3 follows symlinks deliberately and
+  treats the user-approved roots as the trust boundary. A future
+  "no-symlink" mode for stricter callers is tracked but not blocking.
+- **T28.** A non-file (directory, FIFO, device, socket) is read and
+  returns garbage / hangs. **Mitigation:** `metadata().is_file()` is
+  required; everything else gets `not_a_file`.
+
 ### From Phase 1.4 (CI + commit-msg hook)
 - **T22.** AI-tool attribution slips into a commit message. Not a
   security threat per se, but a policy violation that erodes trust.

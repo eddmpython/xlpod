@@ -12,6 +12,7 @@ pub mod bind;
 pub mod ca;
 pub mod config;
 pub mod error;
+pub mod fs_read;
 pub mod middleware;
 pub mod rate_limit;
 pub mod routes;

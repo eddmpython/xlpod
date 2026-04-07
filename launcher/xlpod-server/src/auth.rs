@@ -9,6 +9,7 @@
 
 use std::{
     collections::HashMap,
+    path::PathBuf,
     sync::RwLock,
     time::{Duration, Instant},
 };
@@ -50,9 +51,13 @@ impl Scope {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // `scopes`/`created` consumed by Phase 1.x scope guards
+#[allow(dead_code)] // `created` consumed by future expiry/audit code
 pub struct TokenRecord {
     pub scopes: Vec<Scope>,
+    /// Canonicalized filesystem roots the token is allowed to read
+    /// from. Empty unless the handshake requested `fs:read` and
+    /// supplied at least one valid root.
+    pub fs_roots: Vec<PathBuf>,
     pub created: Instant,
     pub expires: Instant,
 }
@@ -67,15 +72,17 @@ impl TokenStore {
         Self::default()
     }
 
-    /// Generate a new token bound to a (sanitized) scope set.
-    /// Reserved scopes are rejected before reaching this function.
-    pub fn issue(&self, scopes: Vec<Scope>) -> (String, TokenRecord) {
+    /// Generate a new token bound to a (sanitized) scope set and an
+    /// already-canonicalized fs root list. Reserved scopes are rejected
+    /// before reaching this function.
+    pub fn issue(&self, scopes: Vec<Scope>, fs_roots: Vec<PathBuf>) -> (String, TokenRecord) {
         let mut bytes = [0u8; 32];
         rand::rngs::OsRng.fill_bytes(&mut bytes);
         let token = hex::encode(bytes);
         let now = Instant::now();
         let record = TokenRecord {
             scopes,
+            fs_roots,
             created: now,
             expires: now + Duration::from_secs(TOKEN_TTL_SECS),
         };

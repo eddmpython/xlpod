@@ -11,16 +11,20 @@ from ._proto import DEFAULT_BASE_URL, DEFAULT_ORIGIN, PROTO
 from .client import AsyncClient, Client
 from .errors import (
     BadRequest,
+    ForbiddenPath,
     HostNotAllowed,
     LauncherUnreachable,
+    NotAFile,
     OriginNotAllowed,
+    PathNotFound,
+    PathTooLarge,
     RateLimited,
     ReservedScope,
     ScopeDenied,
     Unauthorized,
     XlpodError,
 )
-from .models import Handshake, Health, Version
+from .models import FileContent, Handshake, Health, Version
 
 __version__ = "0.0.0"
 
@@ -30,12 +34,17 @@ __all__ = [
     "Client",
     "DEFAULT_BASE_URL",
     "DEFAULT_ORIGIN",
+    "FileContent",
+    "ForbiddenPath",
     "Handshake",
     "Health",
     "HostNotAllowed",
     "LauncherUnreachable",
+    "NotAFile",
     "OriginNotAllowed",
     "PROTO",
+    "PathNotFound",
+    "PathTooLarge",
     "RateLimited",
     "ReservedScope",
     "ScopeDenied",

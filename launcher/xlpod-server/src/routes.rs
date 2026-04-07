@@ -3,16 +3,19 @@
 //! Phase 1.2: `/health`, `/auth/handshake`, `/launcher/version`, `/ws`.
 //! Authoritative schemas live in `proto/xlpod.openapi.yaml`.
 
+use std::path::PathBuf;
+
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        State,
+        Extension, Query, State,
     },
     middleware::{from_fn, from_fn_with_state},
     response::Response,
     routing::{get, post},
     Json, Router,
 };
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 
@@ -21,7 +24,10 @@ use crate::{
     bind::{LAUNCHER_VERSION, PROTO},
     config::TOKEN_TTL_SECS,
     error::ApiError,
-    middleware::{audit_wrap, bearer_guard, host_guard, origin_guard, TokenRecordExt},
+    fs_read::{canonicalize_roots, read_under_roots},
+    middleware::{
+        audit_wrap, bearer_guard, host_guard, origin_guard, require_fs_read, TokenRecordExt,
+    },
     state::AppState,
 };
 
@@ -47,12 +53,15 @@ async fn health() -> Json<Health> {
 #[derive(Deserialize)]
 struct HandshakeRequest {
     requested_scopes: Vec<Scope>,
+    #[serde(default)]
+    fs_roots: Vec<String>,
 }
 
 #[derive(Serialize)]
 struct HandshakeResponse {
     token: String,
     granted_scopes: Vec<Scope>,
+    granted_fs_roots: Vec<String>,
     expires_in: u64,
 }
 
@@ -63,13 +72,33 @@ async fn handshake(
     if body.requested_scopes.iter().any(|s| s.is_reserved()) {
         return Err(ApiError::ReservedScope);
     }
-    // Phase 1.2: grant exactly what was requested. Phase 1.3 will route
+    let wants_fs = body
+        .requested_scopes
+        .iter()
+        .any(|s| matches!(s, Scope::FsRead | Scope::FsWrite));
+    let granted_roots: Vec<PathBuf> = if wants_fs {
+        let canon = canonicalize_roots(&body.fs_roots);
+        if canon.is_empty() {
+            // fs:* without any usable root is a programming error: the
+            // token would carry the scope but be unable to do anything
+            // with it. Reject so the client knows to widen its request.
+            return Err(ApiError::BadRequest);
+        }
+        canon
+    } else {
+        Vec::new()
+    };
+    // Phase 1.2: grant exactly what was requested. Phase 4 will route
     // through a tray consent dialog and may downgrade.
     let granted = body.requested_scopes.clone();
-    let (token, _record) = state.tokens.issue(granted.clone());
+    let (token, _record) = state.tokens.issue(granted.clone(), granted_roots.clone());
     Ok(Json(HandshakeResponse {
         token,
         granted_scopes: granted,
+        granted_fs_roots: granted_roots
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect(),
         expires_in: TOKEN_TTL_SECS,
     }))
 }
@@ -87,6 +116,37 @@ async fn launcher_version() -> Json<Version> {
         launcher: LAUNCHER_VERSION,
         proto: PROTO,
     })
+}
+
+// ---- /fs/read -------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct FsReadParams {
+    path: String,
+}
+
+#[derive(Serialize)]
+struct FileContent {
+    path: String,
+    size: u64,
+    encoding: &'static str,
+    content: String,
+}
+
+async fn fs_read(
+    Extension(token): Extension<TokenRecordExt>,
+    Query(params): Query<FsReadParams>,
+) -> Result<Json<FileContent>, ApiError> {
+    let requested = PathBuf::from(&params.path);
+    let result = read_under_roots(&requested, &token.0.fs_roots)?;
+    let size = result.bytes.len() as u64;
+    let encoded = BASE64.encode(&result.bytes);
+    Ok(Json(FileContent {
+        path: result.canonical.display().to_string(),
+        size,
+        encoding: "base64",
+        content: encoded,
+    }))
 }
 
 // ---- /ws ------------------------------------------------------------------
@@ -138,10 +198,23 @@ pub fn router(state: AppState) -> Router {
         .route_layer(from_fn(origin_guard))
         .route_layer(from_fn_with_state(state.clone(), host_guard));
 
+    // /fs/read: bearer + fs:read scope. Same outer guards (origin/host)
+    // as the rest of the authenticated tree, plus a route_layer that
+    // enforces the scope. route_layer applies inside-out, so the order
+    // here is exactly: host -> origin -> bearer -> require_fs_read ->
+    // handler.
+    let fs = Router::new()
+        .route("/fs/read", get(fs_read))
+        .route_layer(from_fn(require_fs_read))
+        .route_layer(from_fn_with_state(state.clone(), bearer_guard))
+        .route_layer(from_fn(origin_guard))
+        .route_layer(from_fn_with_state(state.clone(), host_guard));
+
     Router::new()
         .merge(public_open)
         .merge(public_origin)
         .merge(authed)
+        .merge(fs)
         .layer(from_fn_with_state(state.clone(), audit_wrap))
         .with_state(state)
 }

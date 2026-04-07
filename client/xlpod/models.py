@@ -28,4 +28,21 @@ class Version:
 class Handshake:
     token: str
     granted_scopes: List[str] = field(default_factory=list)
+    granted_fs_roots: List[str] = field(default_factory=list)
     expires_in: int = 0
+
+
+@dataclass(frozen=True)
+class FileContent:
+    """Result of a successful ``/fs/read`` call.
+
+    ``content_bytes`` is the decoded payload; ``content`` retains the
+    raw base64 string for callers that need to forward it (e.g. to a
+    JSON-only sink) without re-encoding.
+    """
+
+    path: str
+    size: int
+    encoding: str
+    content: str
+    content_bytes: bytes

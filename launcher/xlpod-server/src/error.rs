@@ -5,7 +5,7 @@ use axum::{http::StatusCode, response::IntoResponse, Json};
 use serde::Serialize;
 
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)] // variants land as Phase 1.x routes are wired up
+#[allow(dead_code)] // variants land as routes are wired up
 pub enum ApiError {
     OriginNotAllowed,
     HostNotAllowed,
@@ -14,6 +14,10 @@ pub enum ApiError {
     RateLimited,
     BadRequest,
     ReservedScope,
+    ForbiddenPath,
+    PathTooLarge,
+    NotAFile,
+    PathNotFound,
     Internal,
 }
 
@@ -28,12 +32,16 @@ struct ErrorBody {
 impl ApiError {
     fn status(self) -> StatusCode {
         match self {
-            ApiError::OriginNotAllowed | ApiError::HostNotAllowed | ApiError::ScopeDenied => {
-                StatusCode::FORBIDDEN
-            }
+            ApiError::OriginNotAllowed
+            | ApiError::HostNotAllowed
+            | ApiError::ScopeDenied
+            | ApiError::ForbiddenPath => StatusCode::FORBIDDEN,
             ApiError::Unauthorized => StatusCode::UNAUTHORIZED,
             ApiError::RateLimited => StatusCode::TOO_MANY_REQUESTS,
-            ApiError::BadRequest | ApiError::ReservedScope => StatusCode::BAD_REQUEST,
+            ApiError::BadRequest | ApiError::ReservedScope | ApiError::PathTooLarge => {
+                StatusCode::BAD_REQUEST
+            }
+            ApiError::NotAFile | ApiError::PathNotFound => StatusCode::NOT_FOUND,
             ApiError::Internal => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -74,6 +82,26 @@ impl ApiError {
                 code: "reserved_scope",
                 message: "requested scope is reserved for a future phase",
                 hint: Some("ai:* scopes are not active in Phase 1"),
+            },
+            ApiError::ForbiddenPath => ErrorBody {
+                code: "forbidden_path",
+                message: "path is not under any of the token's approved fs roots",
+                hint: Some("widen fs_roots at handshake time"),
+            },
+            ApiError::PathTooLarge => ErrorBody {
+                code: "path_too_large",
+                message: "file exceeds the launcher's read size limit",
+                hint: Some("Phase 3 cap is 10 MiB"),
+            },
+            ApiError::NotAFile => ErrorBody {
+                code: "not_a_file",
+                message: "path exists but is not a regular file",
+                hint: None,
+            },
+            ApiError::PathNotFound => ErrorBody {
+                code: "path_not_found",
+                message: "path does not exist",
+                hint: None,
             },
             ApiError::Internal => ErrorBody {
                 code: "internal",

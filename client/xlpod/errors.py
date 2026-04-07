@@ -58,6 +58,22 @@ class BadRequest(XlpodError):
     """Malformed request payload."""
 
 
+class ForbiddenPath(XlpodError):
+    """Requested path is outside the token's approved fs roots."""
+
+
+class PathTooLarge(XlpodError):
+    """File exceeds the launcher's read size cap (Phase 3: 10 MiB)."""
+
+
+class NotAFile(XlpodError):
+    """Path exists but is a directory, FIFO, device, or socket."""
+
+
+class PathNotFound(XlpodError):
+    """Path does not exist."""
+
+
 _CODE_MAP: dict[str, type[XlpodError]] = {
     "origin_not_allowed": OriginNotAllowed,
     "host_not_allowed": HostNotAllowed,
@@ -66,6 +82,10 @@ _CODE_MAP: dict[str, type[XlpodError]] = {
     "rate_limited": RateLimited,
     "reserved_scope": ReservedScope,
     "bad_request": BadRequest,
+    "forbidden_path": ForbiddenPath,
+    "path_too_large": PathTooLarge,
+    "not_a_file": NotAFile,
+    "path_not_found": PathNotFound,
 }
 
 

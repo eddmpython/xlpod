@@ -57,6 +57,8 @@ tags:
     description: Liveness and version probes.
   - name: auth
     description: Token issuance and scope grant.
+  - name: fs
+    description: Filesystem reads under token-bound approved roots.
   - name: ws
     description: Bidirectional event channel.
 
@@ -128,6 +130,59 @@ paths:
               schema: {$ref: "#/components/schemas/Error"}
         "429":
           description: Rate limit exceeded.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+
+  /fs/read:
+    get:
+      operationId: getFsRead
+      tags: [fs]
+      summary: Read a file under one of the token's approved fs roots.
+      description: |
+        Reads a single file from disk and returns its content
+        base64-encoded. The path is resolved against the launcher's
+        current working directory if relative, then canonicalized
+        (symlinks followed). The canonical path MUST start with one of
+        the `fs_roots` the token was issued with — paths outside the
+        approved set are rejected with `forbidden_path`, never read.
+
+        Size is capped at 10 MiB; oversized files are rejected with
+        `path_too_large` *before* the read is performed. Directories,
+        devices, and missing files are rejected with `not_a_file` /
+        `path_not_found`. The handler does not follow into directories
+        and does not list — listing is a separate route added with
+        `/fs/list` in a later phase.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/XXLPodProto"
+        - name: path
+          in: query
+          required: true
+          description: Absolute or relative path. Symlinks are followed; the resolved path must lie under an approved root.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: File contents.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FileContent"
+        "400":
+          description: Malformed path or oversized file.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403":
+          description: Token lacks `fs:read`, or path is outside the approved roots.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+        "404":
+          description: Path does not exist or is not a file.
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Error"}
@@ -280,6 +335,17 @@ components:
           description: |
             Scopes the client wants. The launcher MAY return a subset.
             Reserved scopes (`ai:*`) are rejected in Phase 1.
+        fs_roots:
+          type: array
+          items: {type: string}
+          description: |
+            Absolute filesystem paths the token is allowed to read from
+            (and, in a future phase, write to). REQUIRED when
+            `requested_scopes` contains any `fs:*` scope; an empty list
+            with `fs:read` requested is rejected with `bad_request`.
+            Each entry is canonicalized server-side; the issued token
+            stores the canonicalized form. Phase 4 will gate this
+            through a tray consent dialog before issuing the token.
 
     Handshake:
       type: object
@@ -294,10 +360,36 @@ components:
         granted_scopes:
           type: array
           items: {$ref: "#/components/schemas/Scope"}
+        granted_fs_roots:
+          type: array
+          items: {type: string}
+          description: |
+            Canonicalized fs roots actually attached to this token. May
+            be a subset of the requested set if the user denied any.
         expires_in:
           type: integer
           description: Seconds until the token expires.
           examples: [3600]
+
+    FileContent:
+      type: object
+      required: [path, size, encoding, content]
+      properties:
+        path:
+          type: string
+          description: Canonical path the launcher actually read.
+        size:
+          type: integer
+          description: Number of bytes in the file.
+        encoding:
+          type: string
+          enum: ["base64"]
+          description: |
+            Always `base64` in Phase 3. A `utf-8` shortcut may be added
+            later for plaintext files; clients MUST inspect the field.
+        content:
+          type: string
+          description: Base64-encoded file bytes (no line wrapping).
 
     Error:
       type: object
@@ -306,7 +398,14 @@ components:
         code:
           type: string
           description: Stable machine-readable code.
-          examples: ["origin_not_allowed", "scope_denied", "rate_limited"]
+          examples:
+            - "origin_not_allowed"
+            - "scope_denied"
+            - "rate_limited"
+            - "forbidden_path"
+            - "path_too_large"
+            - "not_a_file"
+            - "path_not_found"
         message:
           type: string
           description: Human-readable message (not localized in v0).

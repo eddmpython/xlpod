@@ -16,7 +16,12 @@ options that exist get turned on.
 2. **TLS required.** Only `/health` may be served over plain HTTP, and
    only as a liveness probe.
 3. **Origin allow-list.** Every request's `Origin` header is checked
-   against a compiled-in list. Anything else: 403.
+   against a compiled-in list. Anything else: 403. The list is currently
+   exactly one entry: **`https://addin.xlwings.org`** (xlwings Lite,
+   confirmed by Phase 0 measurement, 2026-04-07). Wildcards are not
+   honoured. The authoritative copy lives in
+   [`../proto/xlpod.openapi.yaml`](../proto/xlpod.openapi.yaml) under
+   `info.x-xlpod-allowed-origins`.
 4. **Bearer token.** A 256-bit random token is issued at every launcher
    start. Required on every request except `/health`.
 5. **Scoped permissions.** Tokens carry the minimum scopes:

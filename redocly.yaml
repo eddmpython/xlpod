@@ -1,0 +1,12 @@
+extends:
+  - recommended
+
+rules:
+  # /ws is a WebSocket upgrade route — 101 Switching Protocols is the success
+  # response. There is no 2xx by design.
+  operation-2xx-response: off
+  # X-XLPod-Plan-Only is a *reserved* header for Phase 6+ AI dry-run support
+  # (see proto/xlpod.openapi.yaml info.x-xlpod-notes). Currently no mutation
+  # routes consume it; that is intentional. Remove this override when the
+  # first mutation route lands in Phase 1.x.
+  no-unused-components: off

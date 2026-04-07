@@ -1,0 +1,315 @@
+openapi: 3.1.0
+
+info:
+  title: xlpod
+  version: 0.0.0
+  summary: Loopback HTTPS API for the xlpod launcher.
+  description: |
+    Single source of truth for the xlpod loopback HTTPS API. Both the Rust
+    launcher (`launcher/`) and the pure-python client (`client/xlpod`, future)
+    are derived from and validated against this file. Neither side imports the
+    other; this spec is the only contact surface.
+
+    See `proto/README.md` for the change procedure and `docs/SECURITY.md` for
+    the threat model that pins every constraint declared here.
+  license:
+    name: Apache-2.0
+    identifier: Apache-2.0
+  contact:
+    name: xlpod maintainers
+    url: https://github.com/eddmpython/xlpod
+
+  # ---- xlpod-specific extensions (machine-readable; the launcher reads these
+  # at compile time and refuses to build if any constraint is relaxed). ----
+  x-xlpod-proto: 1
+  x-xlpod-bind:
+    - "127.0.0.1"
+    - "::1"
+  x-xlpod-tls-only: true
+  x-xlpod-allowed-origins:
+    - "https://addin.xlwings.org"
+  x-xlpod-rate-limit:
+    per_token_rps: 100
+  x-xlpod-audit: true
+  x-xlpod-notes: |
+    - 0.0.0.0 binding is forbidden at compile time. Loopback only.
+    - Plain HTTP is forbidden. xlwings Lite enforces upgrade-insecure-requests
+      and block-all-mixed-content (Phase 0 measurement, 2026-04-07), so a
+      plain-text fallback would be unreachable from the only legitimate
+      caller and is therefore deleted to shrink attack surface.
+    - The Origin header MUST exactly match an entry in
+      x-xlpod-allowed-origins. The launcher does not honour wildcards.
+    - The Host header MUST be `127.0.0.1:7421` or `[::1]:7421`. This blocks
+      DNS rebinding.
+
+servers:
+  - url: https://127.0.0.1:7421
+    description: |
+      Loopback only. The launcher binds 127.0.0.1 and ::1 at compile time.
+      Port 7421 is the default; 7422-7430 are reserved fallbacks if 7421 is
+      already taken on the user's machine.
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: meta
+    description: Liveness and version probes.
+  - name: auth
+    description: Token issuance and scope grant.
+  - name: ws
+    description: Bidirectional event channel.
+
+paths:
+
+  /health:
+    get:
+      operationId: getHealth
+      tags: [meta]
+      summary: Liveness probe (the only unauthenticated route).
+      description: |
+        Returns 200 with launcher version and proto version. No authentication
+        required, no scopes required, no Origin check. This is the *only*
+        exception in the entire API and exists so the user can verify the
+        launcher is alive without holding a token.
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/XXLPodProto"
+      responses:
+        "200":
+          description: Launcher is alive.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+        "429":
+          description: Rate limit exceeded.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+
+  /auth/handshake:
+    post:
+      operationId: postAuthHandshake
+      tags: [auth]
+      summary: Issue a fresh bearer token with a narrow scope set.
+      description: |
+        Validates the Origin header against `x-xlpod-allowed-origins`, then
+        issues a new 256-bit random bearer token. The launcher MAY downgrade
+        the requested scopes (returning a subset in `granted_scopes`) based
+        on the user's tray consent decision. A token issued without consent
+        is granted the empty scope set and can only call `/launcher/version`
+        and `/ws` ping/pong.
+
+        Tokens are NEVER persisted to disk and NEVER logged (the audit log
+        records only the token id, not the secret). A new token is issued at
+        every launcher start; restarting the launcher invalidates all
+        outstanding tokens.
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/XXLPodProto"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/HandshakeRequest"
+      responses:
+        "200":
+          description: Token issued (possibly with a narrowed scope set).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Handshake"
+        "403":
+          description: Origin not in allow-list, or user denied consent.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+        "429":
+          description: Rate limit exceeded.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+
+  /launcher/version:
+    get:
+      operationId: getLauncherVersion
+      tags: [meta]
+      summary: Launcher and proto version (authenticated).
+      description: |
+        Returns the launcher binary version and the proto version. Requires
+        a bearer token but no scopes — useful for clients to detect upgrade
+        mismatches before issuing scoped calls.
+      parameters:
+        - $ref: "#/components/parameters/XXLPodProto"
+      responses:
+        "200":
+          description: Version info.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Version"
+        "401": {$ref: "#/components/responses/Unauthorized"}
+
+  /ws:
+    get:
+      operationId: getWebSocket
+      tags: [ws]
+      summary: WebSocket upgrade — bidirectional event channel.
+      description: |
+        Upgrades the connection to a WebSocket. Phase 1 implements ping/pong
+        only; the message schema is intentionally undefined here and will be
+        added in Phase 1.2 alongside the launcher implementation.
+
+        WSS is mandatory (the same TLS context as the REST routes). Plain
+        `ws://` is forbidden. CSP `connect-src` measured in Phase 0 includes
+        `wss:`, so this works from xlwings Lite.
+      parameters:
+        - $ref: "#/components/parameters/XXLPodProto"
+      responses:
+        "101":
+          description: Switching Protocols → WebSocket.
+        "401": {$ref: "#/components/responses/Unauthorized"}
+
+components:
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque-256bit
+      description: |
+        256-bit random token, generated from the OS CSPRNG at every launcher
+        start. Required on every route except `/health`. Tokens are scoped
+        (see `Scope`) and rate-limited (100 req/s/token).
+
+  parameters:
+
+    XXLPodProto:
+      name: X-XLPod-Proto
+      in: header
+      required: true
+      description: |
+        Proto version this client expects. The launcher rejects any value
+        other than the version it was built against. Bump = breaking change.
+      schema:
+        type: string
+        enum: ["1"]
+
+    XXLPodPlanOnly:
+      name: X-XLPod-Plan-Only
+      in: header
+      required: false
+      description: |
+        Reserved for future AI / dry-run integration (Phase 6+). When set to
+        "1" on a mutation route, the launcher MUST NOT mutate state and
+        SHOULD return a description of what *would* happen. Phase 1 ignores
+        this header — but every mutation route added in Phase 1.x onwards
+        will preserve the slot for forward compatibility.
+      schema:
+        type: string
+        enum: ["0", "1"]
+        default: "0"
+
+  responses:
+
+    Unauthorized:
+      description: Missing or invalid bearer token.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+
+  schemas:
+
+    Scope:
+      type: string
+      description: |
+        Capability scope attached to a bearer token. Tokens carry the
+        minimum set the user has consented to; broadening a scope requires
+        a new handshake and a new tray confirmation.
+      enum:
+        - "fs:read"
+        - "fs:write"
+        - "run:python"
+        - "excel:com"
+        - "ai:provider:call"
+        - "ai:codegen:write"
+        - "ai:exec:python"
+      x-xlpod-scope-meta:
+        "fs:read":          {phase: 1, status: active,   description: "Read files under user-approved roots."}
+        "fs:write":         {phase: 1, status: active,   description: "Write files under user-approved roots."}
+        "run:python":       {phase: 1, status: active,   description: "Execute Python in the launcher worker."}
+        "excel:com":        {phase: 1, status: active,   description: "Drive Excel via COM (Windows)."}
+        "ai:provider:call": {phase: 6, status: reserved, description: "Call an AI provider via the launcher (key never leaves launcher)."}
+        "ai:codegen:write": {phase: 6, status: reserved, description: "Allow AI-driven code edits in user files (subject to dry-run + consent)."}
+        "ai:exec:python":   {phase: 6, status: reserved, description: "Allow AI-issued run:python calls (logged with actor=ai:*)."}
+
+    Health:
+      type: object
+      required: [status, launcher, proto]
+      properties:
+        status:
+          type: string
+          enum: ["ok"]
+        launcher:
+          type: string
+          description: Launcher binary semver.
+          examples: ["0.0.0"]
+        proto:
+          type: integer
+          description: Proto version (matches X-XLPod-Proto).
+          examples: [1]
+
+    Version:
+      type: object
+      required: [launcher, proto]
+      properties:
+        launcher:
+          type: string
+        proto:
+          type: integer
+
+    HandshakeRequest:
+      type: object
+      required: [requested_scopes]
+      properties:
+        requested_scopes:
+          type: array
+          items: {$ref: "#/components/schemas/Scope"}
+          description: |
+            Scopes the client wants. The launcher MAY return a subset.
+            Reserved scopes (`ai:*`) are rejected in Phase 1.
+
+    Handshake:
+      type: object
+      required: [token, granted_scopes, expires_in]
+      properties:
+        token:
+          type: string
+          format: password
+          description: |
+            Bearer token. SENSITIVE — never log, never persist, never display
+            in plain UI. The launcher's tracing layer redacts this value.
+        granted_scopes:
+          type: array
+          items: {$ref: "#/components/schemas/Scope"}
+        expires_in:
+          type: integer
+          description: Seconds until the token expires.
+          examples: [3600]
+
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: Stable machine-readable code.
+          examples: ["origin_not_allowed", "scope_denied", "rate_limited"]
+        message:
+          type: string
+          description: Human-readable message (not localized in v0).
+        hint:
+          type: string
+          description: Optional remediation hint.

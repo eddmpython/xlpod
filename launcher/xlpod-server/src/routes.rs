@@ -129,14 +129,14 @@ pub fn router(state: AppState) -> Router {
     let public_origin = Router::new()
         .route("/auth/handshake", post(handshake))
         .route_layer(from_fn(origin_guard))
-        .route_layer(from_fn(host_guard));
+        .route_layer(from_fn_with_state(state.clone(), host_guard));
 
     let authed = Router::new()
         .route("/launcher/version", get(launcher_version))
         .route("/ws", get(ws_upgrade))
         .route_layer(from_fn_with_state(state.clone(), bearer_guard))
         .route_layer(from_fn(origin_guard))
-        .route_layer(from_fn(host_guard));
+        .route_layer(from_fn_with_state(state.clone(), host_guard));
 
     Router::new()
         .merge(public_open)

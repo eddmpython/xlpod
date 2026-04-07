@@ -28,7 +28,7 @@ use axum::{
 use crate::{
     audit::{now_ms, AuditEntry},
     auth::{Scope, TokenRecord, TokenStore},
-    config::{allowed_hosts, ALLOWED_ORIGINS},
+    config::ALLOWED_ORIGINS,
     error::ApiError,
     state::AppState,
 };
@@ -73,10 +73,13 @@ pub async fn audit_wrap(
 
 // ---- 1. host guard --------------------------------------------------------
 
-pub async fn host_guard(request: Request, next: Next) -> Result<Response, ApiError> {
+pub async fn host_guard(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Result<Response, ApiError> {
     let host = header_str(request.headers(), header::HOST).ok_or(ApiError::HostNotAllowed)?;
-    let permitted = allowed_hosts();
-    if !permitted.iter().any(|p| p == host) {
+    if !state.allowed_hosts.iter().any(|p| p == host) {
         return Err(ApiError::HostNotAllowed);
     }
     Ok(next.run(request).await)

@@ -1,28 +1,22 @@
-//! xlpod loopback HTTPS server.
+//! xlpod-server binary entry point.
 //!
-//! Phase 1.2: 5-check security stack + token issuance + WebSocket.
+//! Thin shell over `xlpod_server::make_app`. The launcher GUI binary in
+//! Phase 1.1b will reuse the same library entry point and add a tray.
+//!
 //! Authoritative API spec: `proto/xlpod.openapi.yaml`.
 //! Threat model: `docs/threat-model.md`.
 
-mod audit;
-mod auth;
-mod bind;
-mod config;
-mod error;
-mod middleware;
-mod rate_limit;
-mod routes;
-mod state;
-mod tls;
-
 use std::{process::ExitCode, sync::Arc};
 
-use crate::{
+use xlpod_server::{
     audit::AuditLog,
     auth::TokenStore,
     bind::{addr_v4, LAUNCHER_VERSION, PROTO},
+    config,
+    make_app,
     rate_limit::RateLimiter,
     state::AppState,
+    tls,
 };
 
 #[tokio::main]
@@ -41,10 +35,6 @@ async fn main() -> ExitCode {
         Ok(c) => c,
         Err(e) => {
             eprintln!("error: failed to load TLS material: {e}");
-            eprintln!(
-                "hint: set XLPOD_TLS_CERT/XLPOD_TLS_KEY, or run the Phase 0 \
-                 mkcert step to populate .certs/"
-            );
             return ExitCode::from(2);
         }
     };
@@ -61,9 +51,10 @@ async fn main() -> ExitCode {
         tokens: Arc::new(TokenStore::new()),
         limiter: Arc::new(RateLimiter::new()),
         audit,
+        allowed_hosts: Arc::new(config::allowed_hosts().to_vec()),
     };
 
-    let app = routes::router(state);
+    let app = make_app(state);
     let addr = addr_v4();
     eprintln!("listening on https://{addr} (loopback only)");
 

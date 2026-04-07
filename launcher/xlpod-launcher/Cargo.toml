@@ -1,0 +1,21 @@
+[package]
+name = "xlpod-launcher"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Tray launcher that hosts the xlpod loopback HTTPS server. See proto/xlpod.openapi.yaml for the API surface."
+
+[lints]
+workspace = true
+
+[dependencies]
+xlpod-server = { path = "../xlpod-server" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tray-icon = "0.19"
+tao = "0.30"
+
+[[bin]]
+name = "xlpod-launcher"
+path = "src/main.rs"

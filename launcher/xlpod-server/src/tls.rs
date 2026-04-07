@@ -14,7 +14,7 @@ use std::path::PathBuf;
 
 use axum_server::tls_rustls::RustlsConfig;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TlsPaths {
     pub cert: PathBuf,
     pub key: PathBuf,

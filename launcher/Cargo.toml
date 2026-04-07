@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["xlpod-server"]
+members = ["xlpod-server", "xlpod-launcher"]
 
 [workspace.package]
 edition = "2021"

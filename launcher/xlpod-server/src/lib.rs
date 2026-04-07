@@ -15,6 +15,7 @@ pub mod consent;
 pub mod error;
 pub mod fs_read;
 pub mod middleware;
+pub mod python_worker;
 pub mod rate_limit;
 pub mod routes;
 pub mod state;
@@ -85,6 +86,7 @@ pub async fn serve(opts: ServeOptions) -> Result<(), ServeError> {
         audit: audit_log,
         allowed_hosts: Arc::new(config::allowed_hosts().to_vec()),
         consent: opts.consent,
+        worker: python_worker::PythonWorker::new(),
     };
     let app = make_app(state);
     let addr = bind::addr_v4();

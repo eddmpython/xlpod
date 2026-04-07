@@ -23,9 +23,12 @@ from .errors import (
     ReservedScope,
     ScopeDenied,
     Unauthorized,
+    WorkerCrashed,
+    WorkerSpawnFailed,
+    WorkerTimeout,
     XlpodError,
 )
-from .models import FileContent, Handshake, Health, Version
+from .models import FileContent, Handshake, Health, RunResult, Version
 
 __version__ = "0.0.0"
 
@@ -49,9 +52,13 @@ __all__ = [
     "PathTooLarge",
     "RateLimited",
     "ReservedScope",
+    "RunResult",
     "ScopeDenied",
     "Unauthorized",
     "Version",
+    "WorkerCrashed",
+    "WorkerSpawnFailed",
+    "WorkerTimeout",
     "XlpodError",
     "__version__",
 ]

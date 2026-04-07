@@ -84,7 +84,7 @@ def main() -> int:
             print(f"  health    -> status={health.status} launcher={health.launcher} proto={health.proto}")
 
             handshake = client.handshake(
-                scopes=["fs:read"],
+                scopes=["fs:read", "run:python"],
                 fs_roots=[str(repo_root)],
             )
             token_id = handshake.token[:8]
@@ -101,6 +101,16 @@ def main() -> int:
             content = client.read_file(str(target))
             preview = content.content_bytes[:60].decode("utf-8", errors="replace")
             print(f"  fs.read   -> path={Path(content.path).name} size={content.size} preview={preview!r}")
+
+            # Drive the launcher's Python worker through /run/python.
+            # The snippet computes a value, prints, and surfaces it
+            # via the _result convention.
+            run = client.run_python(
+                "import sys\n"
+                "print('python', sys.version_info[:3])\n"
+                "_result = sum(range(10))"
+            )
+            print(f"  run.python-> ok={run.ok} result={run.result} stdout={run.stdout.strip()!r}")
     except xlpod.LauncherUnreachable as e:
         print(f"FAIL: {e}", file=sys.stderr)
         print("hint: start the launcher with `cargo run -p xlpod-server`", file=sys.stderr)

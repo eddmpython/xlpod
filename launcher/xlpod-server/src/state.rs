@@ -2,7 +2,10 @@
 
 use std::sync::Arc;
 
-use crate::{audit::AuditLog, auth::TokenStore, consent::ConsentBackend, rate_limit::RateLimiter};
+use crate::{
+    audit::AuditLog, auth::TokenStore, consent::ConsentBackend, python_worker::PythonWorker,
+    rate_limit::RateLimiter,
+};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -18,4 +21,8 @@ pub struct AppState {
     /// is issued. Production tray launcher uses `MessageBoxConsent`;
     /// the standalone dev binary defaults to `AutoApproveConsent`.
     pub consent: Arc<dyn ConsentBackend>,
+    /// Shared Python worker driving `/run/python`. Spawned lazily on
+    /// the first call. See [`crate::python_worker`] for the
+    /// lifecycle and timeout contract.
+    pub worker: PythonWorker,
 }

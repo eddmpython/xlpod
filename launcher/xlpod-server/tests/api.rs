@@ -13,12 +13,15 @@ use std::sync::Arc;
 
 use reqwest::{Client, StatusCode};
 use serde_json::json;
+use std::time::Duration;
 use tempfile::TempDir;
+
 use xlpod_server::{
     audit::AuditLog,
     auth::TokenStore,
     consent::{AutoApproveConsent, ConsentBackend, DenyAllConsent},
     make_app,
+    python_worker::PythonWorker,
     rate_limit::RateLimiter,
     state::AppState,
 };
@@ -32,10 +35,18 @@ struct Harness {
 }
 
 async fn spawn() -> Harness {
-    spawn_with_consent(Arc::new(AutoApproveConsent)).await
+    spawn_with(Arc::new(AutoApproveConsent), PythonWorker::new()).await
 }
 
 async fn spawn_with_consent(consent: Arc<dyn ConsentBackend>) -> Harness {
+    spawn_with(consent, PythonWorker::new()).await
+}
+
+async fn spawn_with_worker(worker: PythonWorker) -> Harness {
+    spawn_with(Arc::new(AutoApproveConsent), worker).await
+}
+
+async fn spawn_with(consent: Arc<dyn ConsentBackend>, worker: PythonWorker) -> Harness {
     let dir = tempfile::tempdir().expect("tempdir");
     let audit = AuditLog::open(dir.path().join("audit.log"))
         .await
@@ -50,6 +61,7 @@ async fn spawn_with_consent(consent: Arc<dyn ConsentBackend>) -> Harness {
         audit,
         allowed_hosts: Arc::new(vec![format!("{addr}")]),
         consent,
+        worker,
     };
     let app = make_app(state);
     tokio::spawn(async move {
@@ -222,6 +234,115 @@ async fn handshake_consent_skipped_for_empty_scope_set() {
     let h = spawn_with_consent(Arc::new(DenyAllConsent)).await;
     let resp = handshake(&h, json!([])).await;
     assert_eq!(resp.status(), StatusCode::OK);
+}
+
+// ---- /run/python -----------------------------------------------------------
+
+async fn handshake_with_run_python(h: &Harness) -> String {
+    let resp = client()
+        .post(format!("{}/auth/handshake", h.base))
+        .header("Origin", ORIGIN)
+        .header("Host", &h.host_header)
+        .json(&json!({"requested_scopes": ["run:python"]}))
+        .send()
+        .await
+        .expect("send");
+    let body: serde_json::Value = resp.json().await.expect("json");
+    body["token"].as_str().expect("token").to_string()
+}
+
+async fn post_run_python(h: &Harness, token: &str, code: &str) -> reqwest::Response {
+    client()
+        .post(format!("{}/run/python", h.base))
+        .header("Origin", ORIGIN)
+        .header("Host", &h.host_header)
+        .header("Authorization", format!("Bearer {token}"))
+        .json(&json!({"code": code}))
+        .send()
+        .await
+        .expect("send")
+}
+
+#[tokio::test]
+async fn run_python_happy_path_returns_result_and_stdout() {
+    let h = spawn().await;
+    let token = handshake_with_run_python(&h).await;
+    let resp = post_run_python(&h, &token, "print('hi from worker'); _result = 1 + 2").await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: serde_json::Value = resp.json().await.expect("json");
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["stdout"].as_str().unwrap().trim(), "hi from worker");
+    assert_eq!(body["result"], "3");
+    assert!(body["error"].is_null());
+}
+
+#[tokio::test]
+async fn run_python_exception_returns_ok_false_with_traceback() {
+    let h = spawn().await;
+    let token = handshake_with_run_python(&h).await;
+    let resp = post_run_python(&h, &token, "1/0").await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: serde_json::Value = resp.json().await.expect("json");
+    assert_eq!(body["ok"], false);
+    let err = body["error"].as_str().unwrap_or("");
+    assert!(err.contains("ZeroDivisionError"), "got: {err}");
+}
+
+#[tokio::test]
+async fn run_python_serializes_two_calls_through_one_worker() {
+    // Variables set in one call should be visible in the next, since
+    // Phase 5 ships a single shared globals namespace per worker
+    // (the worker `exec`s into a per-call namespace BUT the worker
+    // process itself outlives the call). For Phase 5 we instead test
+    // the simpler property that two calls in a row both succeed and
+    // each runs in its own clean namespace, since per-call exec uses
+    // a fresh dict.
+    let h = spawn().await;
+    let token = handshake_with_run_python(&h).await;
+    let r1 = post_run_python(&h, &token, "_result = 7").await;
+    let r2 = post_run_python(&h, &token, "_result = 11").await;
+    let b1: serde_json::Value = r1.json().await.expect("json");
+    let b2: serde_json::Value = r2.json().await.expect("json");
+    assert_eq!(b1["result"], "7");
+    assert_eq!(b2["result"], "11");
+}
+
+#[tokio::test]
+async fn run_python_timeout_kills_worker_and_recovers() {
+    // Spawn a server with a very short worker timeout so the test
+    // doesn't sit on a 30 second wall.
+    let h = spawn_with_worker(PythonWorker::with_timeout(Duration::from_millis(800))).await;
+    let token = handshake_with_run_python(&h).await;
+    let resp = post_run_python(&h, &token, "import time; time.sleep(5)").await;
+    assert_eq!(resp.status(), StatusCode::GATEWAY_TIMEOUT);
+    let body: serde_json::Value = resp.json().await.expect("json");
+    assert_eq!(body["code"], "worker_timeout");
+
+    // Recovery: the next call must spawn a fresh worker and succeed.
+    let resp2 = post_run_python(&h, &token, "_result = 42").await;
+    assert_eq!(resp2.status(), StatusCode::OK);
+    let body2: serde_json::Value = resp2.json().await.expect("json");
+    assert_eq!(body2["result"], "42");
+}
+
+#[tokio::test]
+async fn run_python_without_scope_is_denied() {
+    let h = spawn().await;
+    // Issue a token without run:python.
+    let resp = client()
+        .post(format!("{}/auth/handshake", h.base))
+        .header("Origin", ORIGIN)
+        .header("Host", &h.host_header)
+        .json(&json!({"requested_scopes": ["excel:com"]}))
+        .send()
+        .await
+        .expect("send");
+    let body: serde_json::Value = resp.json().await.expect("json");
+    let token = body["token"].as_str().expect("token").to_string();
+    let resp = post_run_python(&h, &token, "_result = 1").await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let body: serde_json::Value = resp.json().await.expect("json");
+    assert_eq!(body["code"], "scope_denied");
 }
 
 // ---- /fs/read --------------------------------------------------------------

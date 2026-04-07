@@ -59,6 +59,8 @@ tags:
     description: Token issuance and scope grant.
   - name: fs
     description: Filesystem reads under token-bound approved roots.
+  - name: run
+    description: Execute Python in the launcher's worker process.
   - name: ws
     description: Bidirectional event channel.
 
@@ -190,6 +192,68 @@ paths:
               schema: {$ref: "#/components/schemas/Error"}
         "404":
           description: Path does not exist or is not a file.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+
+  /run/python:
+    post:
+      operationId: postRunPython
+      tags: [run]
+      summary: Execute a Python snippet inside the launcher's worker.
+      description: |
+        Sends `code` to a long-running Python worker process owned by
+        the launcher and returns its captured stdout/stderr plus an
+        optional `result` (the value of the `_result` global if the
+        snippet sets one). The worker is shared across all callers
+        within a single launcher run; calls are serialized so two
+        snippets never execute concurrently against the same globals
+        namespace.
+
+        **Execution errors are NOT HTTP errors.** A snippet that
+        raises (`1/0`, ImportError, etc.) returns 200 with `ok=false`
+        and a Python traceback in `error`. The HTTP layer only fails
+        when the worker itself misbehaves: `worker_spawn_failed` if
+        the launcher cannot find a Python interpreter,
+        `worker_timeout` if the snippet exceeds the wall-clock cap
+        (default 30 s; the worker is killed and the next call gets a
+        fresh process), or `worker_crashed` if the worker dies
+        mid-call.
+
+        Phase 5 ships a single shared worker. Per-workbook isolation,
+        idle shutdown, and the 800 MiB memory ceiling described in
+        `docs/design.md` §3.6 land in Phase 5.x.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/XXLPodProto"
+        - $ref: "#/components/parameters/XXLPodPlanOnly"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RunPythonRequest"
+      responses:
+        "200":
+          description: Worker executed (possibly with `ok=false` for a Python-level error).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunPythonResponse"
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403":
+          description: Token lacks `run:python`.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+        "500":
+          description: Worker spawn failed or worker crashed.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+        "504":
+          description: Worker exceeded the wall-clock cap; the worker has been killed.
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Error"}
@@ -378,6 +442,35 @@ components:
           description: Seconds until the token expires.
           examples: [3600]
 
+    RunPythonRequest:
+      type: object
+      required: [code]
+      properties:
+        code:
+          type: string
+          description: |
+            Python source. The worker `exec`s it inside a fresh local
+            namespace; if the snippet sets a `_result` global, the
+            value's `repr()` is returned in the `result` field.
+
+    RunPythonResponse:
+      type: object
+      required: [ok, stdout, stderr]
+      properties:
+        ok:
+          type: boolean
+          description: True iff the snippet ran without raising. False on Python-level exceptions; the HTTP status is still 200.
+        stdout:
+          type: string
+        stderr:
+          type: string
+        result:
+          type: [string, "null"]
+          description: repr() of `_result` if set, else null.
+        error:
+          type: [string, "null"]
+          description: Python traceback when `ok=false`.
+
     FileContent:
       type: object
       required: [path, size, encoding, content]
@@ -414,6 +507,9 @@ components:
             - "path_too_large"
             - "not_a_file"
             - "path_not_found"
+            - "worker_spawn_failed"
+            - "worker_timeout"
+            - "worker_crashed"
         message:
           type: string
           description: Human-readable message (not localized in v0).

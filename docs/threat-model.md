@@ -157,6 +157,52 @@ New surface introduced after the initial draft and the threats it brings:
   returns garbage / hangs. **Mitigation:** `metadata().is_file()` is
   required; everything else gets `not_a_file`.
 
+### From Phase 5 (`/run/python` worker)
+- **T32.** Snippet runs as the launcher's user — full access to the
+  user account. This is by design (the worker is an execution
+  mechanism, not a sandbox), but the trust boundary moves to the
+  consent dialog and the audit log. **Mitigation:** every handshake
+  that requests `run:python` goes through `MessageBoxConsent` (T29),
+  every call is recorded in the JSONL audit log with the token id,
+  and the token can be revoked by restarting the launcher. A future
+  Phase 5.x sandbox (Windows AppContainer / Linux user namespaces)
+  is tracked but explicitly out of scope for Phase 5.
+- **T33.** Runaway snippet (infinite loop, `time.sleep(huge)`,
+  `while True: pass`) keeps the worker pinned indefinitely.
+  **Mitigation:** every `/run/python` call is wrapped in
+  `tokio::time::timeout` against `PythonWorker::timeout` (default
+  30 s; CI tests override to 800 ms). On expiry the launcher kills
+  the worker with `Child::start_kill` and clears the slot, so the
+  next call spawns a fresh process. Verified end to end by
+  `run_python_timeout_kills_worker_and_recovers`.
+- **T34.** Worker dies mid-call (segfault, OOM, manual kill) and
+  the next call hangs forever waiting on a closed pipe.
+  **Mitigation:** all reads/writes against the worker pipes are
+  inside the same `tokio::time::timeout`; on `Ok(Ok(0))` (EOF) or
+  any IO error the launcher resets the worker slot and surfaces
+  `worker_crashed`, and the next call respawns. The
+  `kill_on_drop(true)` flag on the spawned `Child` guarantees the
+  process dies if the launcher itself exits abnormally.
+- **T35.** Snippet writes binary data or a partial line to stdout
+  and corrupts the JSON-RPC framing. **Mitigation:** the embedded
+  worker script captures user `print()` via
+  `contextlib.redirect_stdout(io.StringIO())` so the user's writes
+  never reach the real stdout pipe; only the worker's own
+  `_send()` (a single `json.dumps(...) + "\n"`) does. The launcher
+  reads exactly one line per request via `BufReader::read_line`.
+- **T36.** Embedded `python_worker.py` is itself the trust boundary
+  — a bug in the worker would leak across calls. **Mitigation:**
+  the worker script is small (~80 lines), stdlib-only, and is
+  embedded into the launcher binary via `include_str!` so it
+  cannot be tampered with at runtime by an attacker who only has
+  filesystem access to the launcher install directory.
+- **T37.** Worker discovery picks an attacker-planted `python` on
+  PATH. **Mitigation:** Phase 5 honours `XLPOD_PYTHON` first, then
+  `python`, then `python3`. Phase 5.x will pin the launcher at the
+  embedded `python.org` distribution under
+  `%LOCALAPPDATA%\xlpod\runtime\` (`docs/design.md` §3.2), at
+  which point PATH is not consulted at all.
+
 ### From Phase 4 (consent dialog)
 - **T29.** A drive-by website calls the launcher and silently obtains
   a token because there is no human in the loop. **Mitigation:**

@@ -138,6 +138,10 @@ pub async fn require_fs_read(request: Request, next: Next) -> Result<Response, A
     require_scope(request, next, Scope::FsRead).await
 }
 
+pub async fn require_run_python(request: Request, next: Next) -> Result<Response, ApiError> {
+    require_scope(request, next, Scope::RunPython).await
+}
+
 async fn require_scope(request: Request, next: Next, need: Scope) -> Result<Response, ApiError> {
     let record = request
         .extensions()

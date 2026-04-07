@@ -19,6 +19,9 @@ pub enum ApiError {
     PathTooLarge,
     NotAFile,
     PathNotFound,
+    WorkerSpawnFailed,
+    WorkerTimeout,
+    WorkerCrashed,
     Internal,
 }
 
@@ -44,7 +47,10 @@ impl ApiError {
                 StatusCode::BAD_REQUEST
             }
             ApiError::NotAFile | ApiError::PathNotFound => StatusCode::NOT_FOUND,
-            ApiError::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+            ApiError::WorkerTimeout => StatusCode::GATEWAY_TIMEOUT,
+            ApiError::WorkerSpawnFailed | ApiError::WorkerCrashed | ApiError::Internal => {
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
         }
     }
 
@@ -109,6 +115,21 @@ impl ApiError {
                 code: "path_not_found",
                 message: "path does not exist",
                 hint: None,
+            },
+            ApiError::WorkerSpawnFailed => ErrorBody {
+                code: "worker_spawn_failed",
+                message: "could not start the python worker process",
+                hint: Some("install python on PATH or set XLPOD_PYTHON"),
+            },
+            ApiError::WorkerTimeout => ErrorBody {
+                code: "worker_timeout",
+                message: "worker exceeded the wall-clock cap and was killed",
+                hint: Some("default cap is 30 seconds; the next call gets a fresh worker"),
+            },
+            ApiError::WorkerCrashed => ErrorBody {
+                code: "worker_crashed",
+                message: "worker died mid-call",
+                hint: Some("the next call will spawn a fresh worker"),
             },
             ApiError::Internal => ErrorBody {
                 code: "internal",

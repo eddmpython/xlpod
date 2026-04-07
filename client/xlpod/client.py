@@ -25,7 +25,7 @@ from ._proto import (
     PROTO,
 )
 from ._transport import Transport, TransportResponse, autodetect
-from .models import FileContent, Handshake, Health, Version
+from .models import FileContent, Handshake, Health, RunResult, Version
 
 
 class AsyncClient:
@@ -85,6 +85,31 @@ class AsyncClient:
     async def version(self) -> Version:
         data = await self._request("GET", "/launcher/version", auth=True)
         return Version(launcher=data["launcher"], proto=data["proto"])
+
+    async def run_python(self, code: str) -> RunResult:
+        """Execute a Python snippet inside the launcher's worker.
+
+        Requires the ``run:python`` scope. Snippets that raise return a
+        ``RunResult`` with ``ok=False`` and the traceback in ``error``;
+        worker-level failures (spawn, timeout, crash) raise the
+        matching ``XlpodError`` subclass instead.
+
+        Convention: a snippet may set the ``_result`` global, in which
+        case its ``repr()`` lands in ``RunResult.result``.
+        """
+        data = await self._request(
+            "POST",
+            "/run/python",
+            json_body={"code": code},
+            auth=True,
+        )
+        return RunResult(
+            ok=bool(data.get("ok", False)),
+            stdout=str(data.get("stdout", "")),
+            stderr=str(data.get("stderr", "")),
+            result=data.get("result"),
+            error=data.get("error"),
+        )
 
     async def read_file(self, path: str) -> FileContent:
         """Read a file under one of the token's approved fs roots.
@@ -225,6 +250,9 @@ class Client:
 
     def read_file(self, path: str) -> FileContent:
         return self._run(self._async.read_file(path))
+
+    def run_python(self, code: str) -> RunResult:
+        return self._run(self._async.run_python(code))
 
     def close(self) -> None:
         if self._loop is None:

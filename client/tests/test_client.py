@@ -183,6 +183,74 @@ def test_sync_client_health_round_trip() -> None:
 
 
 @pytest.mark.asyncio
+async def test_run_python_happy_returns_result_dataclass() -> None:
+    transport = FakeTransport(
+        [
+            _ok({"token": "9" * 64, "granted_scopes": ["run:python"], "expires_in": 3600}),
+            _ok(
+                {
+                    "ok": True,
+                    "stdout": "hi\n",
+                    "stderr": "",
+                    "result": "3",
+                    "error": None,
+                }
+            ),
+        ]
+    )
+    client = xlpod.AsyncClient(transport=transport)
+    await client.handshake(scopes=["run:python"])
+    result = await client.run_python("print('hi'); _result = 1+2")
+    assert isinstance(result, xlpod.RunResult)
+    assert result.ok is True
+    assert result.stdout == "hi\n"
+    assert result.result == "3"
+    assert result.error is None
+    run_call = transport.recorded[1]
+    assert run_call.json_body == {"code": "print('hi'); _result = 1+2"}
+    assert run_call.headers["Authorization"] == f"Bearer {'9' * 64}"
+
+
+@pytest.mark.asyncio
+async def test_run_python_python_level_exception_returns_ok_false() -> None:
+    transport = FakeTransport(
+        [
+            _ok({"token": "8" * 64, "granted_scopes": ["run:python"], "expires_in": 3600}),
+            _ok(
+                {
+                    "ok": False,
+                    "stdout": "",
+                    "stderr": "",
+                    "result": None,
+                    "error": "Traceback...\nZeroDivisionError: division by zero",
+                }
+            ),
+        ]
+    )
+    client = xlpod.AsyncClient(transport=transport)
+    await client.handshake(scopes=["run:python"])
+    # NB: this does NOT raise — Python exceptions inside the snippet
+    # come back as ok=False, not as XlpodError.
+    result = await client.run_python("1/0")
+    assert result.ok is False
+    assert "ZeroDivisionError" in str(result.error)
+
+
+@pytest.mark.asyncio
+async def test_run_python_worker_timeout_raises_specific_exception() -> None:
+    transport = FakeTransport(
+        [
+            _ok({"token": "7" * 64, "granted_scopes": ["run:python"], "expires_in": 3600}),
+            _err(504, "worker_timeout"),
+        ]
+    )
+    client = xlpod.AsyncClient(transport=transport)
+    await client.handshake(scopes=["run:python"])
+    with pytest.raises(xlpod.WorkerTimeout):
+        await client.run_python("import time; time.sleep(60)")
+
+
+@pytest.mark.asyncio
 async def test_read_file_decodes_base64_and_records_query() -> None:
     import base64
 

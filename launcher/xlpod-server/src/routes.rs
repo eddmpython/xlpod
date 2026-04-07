@@ -28,8 +28,10 @@ use crate::{
     error::ApiError,
     fs_read::{canonicalize_roots, read_under_roots},
     middleware::{
-        audit_wrap, bearer_guard, host_guard, origin_guard, require_fs_read, TokenRecordExt,
+        audit_wrap, bearer_guard, host_guard, origin_guard, require_fs_read, require_run_python,
+        TokenRecordExt,
     },
+    python_worker::ExecResult,
     state::AppState,
 };
 
@@ -174,6 +176,21 @@ async fn fs_read(
     }))
 }
 
+// ---- /run/python ----------------------------------------------------------
+
+#[derive(Deserialize)]
+struct RunPythonRequest {
+    code: String,
+}
+
+async fn run_python(
+    State(state): State<AppState>,
+    Json(body): Json<RunPythonRequest>,
+) -> Result<Json<ExecResult>, ApiError> {
+    let result = state.worker.exec(&body.code).await?;
+    Ok(Json(result))
+}
+
 // ---- /ws ------------------------------------------------------------------
 
 async fn ws_upgrade(
@@ -235,11 +252,20 @@ pub fn router(state: AppState) -> Router {
         .route_layer(from_fn(origin_guard))
         .route_layer(from_fn_with_state(state.clone(), host_guard));
 
+    // /run/python: same gating, different scope.
+    let run = Router::new()
+        .route("/run/python", post(run_python))
+        .route_layer(from_fn(require_run_python))
+        .route_layer(from_fn_with_state(state.clone(), bearer_guard))
+        .route_layer(from_fn(origin_guard))
+        .route_layer(from_fn_with_state(state.clone(), host_guard));
+
     Router::new()
         .merge(public_open)
         .merge(public_origin)
         .merge(authed)
         .merge(fs)
+        .merge(run)
         .layer(from_fn_with_state(state.clone(), audit_wrap))
         .with_state(state)
 }

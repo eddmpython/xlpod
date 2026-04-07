@@ -84,6 +84,24 @@ class PathNotFound(XlpodError):
     """Path does not exist."""
 
 
+class WorkerSpawnFailed(XlpodError):
+    """Launcher could not start the Python worker process."""
+
+
+class WorkerTimeout(XlpodError):
+    """Worker exceeded the wall-clock cap and was killed.
+
+    Note: a Python-level exception inside ``run_python()`` does **not**
+    raise this — it returns a ``RunResult`` with ``ok=False`` and a
+    traceback in ``error``. This exception is reserved for the case
+    where the worker itself misbehaved.
+    """
+
+
+class WorkerCrashed(XlpodError):
+    """Worker process died mid-call."""
+
+
 _CODE_MAP: dict[str, type[XlpodError]] = {
     "origin_not_allowed": OriginNotAllowed,
     "host_not_allowed": HostNotAllowed,
@@ -97,6 +115,9 @@ _CODE_MAP: dict[str, type[XlpodError]] = {
     "path_too_large": PathTooLarge,
     "not_a_file": NotAFile,
     "path_not_found": PathNotFound,
+    "worker_spawn_failed": WorkerSpawnFailed,
+    "worker_timeout": WorkerTimeout,
+    "worker_crashed": WorkerCrashed,
 }
 
 

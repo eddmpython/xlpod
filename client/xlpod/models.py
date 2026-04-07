@@ -33,6 +33,23 @@ class Handshake:
 
 
 @dataclass(frozen=True)
+class RunResult:
+    """Result of a ``/run/python`` call.
+
+    A Python-level exception inside the snippet sets ``ok=False`` and
+    populates ``error`` with the traceback; the HTTP status is still
+    200 in that case. Worker-level failures (spawn, timeout, crash)
+    raise the corresponding ``XlpodError`` subclass instead.
+    """
+
+    ok: bool
+    stdout: str
+    stderr: str
+    result: object  # str | None
+    error: object  # str | None
+
+
+@dataclass(frozen=True)
 class FileContent:
     """Result of a successful ``/fs/read`` call.
 

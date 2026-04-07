@@ -2,7 +2,10 @@
 name = "xlpod-workspace"
 version = "0.0.0"
 description = "xlpod monorepo root — not published. See client/ for the PyPI package."
-requires-python = ">=3.12"
+# Workspace floor is the most permissive member (the xlpod client supports
+# 3.10+). The phase0 probe is 3.12-only on a developer box; it does not
+# run in CI under 3.10/3.11 because it is invoked manually.
+requires-python = ">=3.10"
 dependencies = []
 
 [tool.uv.workspace]

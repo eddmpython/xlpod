@@ -11,11 +11,18 @@ description = "Loopback HTTPS server for xlpod. See proto/xlpod.openapi.yaml for
 workspace = true
 
 [dependencies]
-axum = "0.7"
+axum = { version = "0.7", features = ["ws"] }
 axum-server = { version = "0.7", features = ["tls-rustls"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "fs", "time"] }
+tower = "0.5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+rand = "0.8"
+hex = "0.4"
+futures-util = "0.3"
+
+[dev-dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 
 [[bin]]
 name = "xlpod-server"

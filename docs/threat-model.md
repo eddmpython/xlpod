@@ -157,6 +157,35 @@ New surface introduced after the initial draft and the threats it brings:
   returns garbage / hangs. **Mitigation:** `metadata().is_file()` is
   required; everything else gets `not_a_file`.
 
+### From Phase 4 (consent dialog)
+- **T29.** A drive-by website calls the launcher and silently obtains
+  a token because there is no human in the loop. **Mitigation:**
+  `/auth/handshake` consults a `ConsentBackend` *before* minting any
+  token. The production tray launcher uses `MessageBoxConsent`, a
+  `MB_TOPMOST | MB_SYSTEMMODAL` Win32 dialog that shows the requesting
+  origin, the scopes, and the canonicalized fs roots; the user must
+  click **Yes** for the handshake to proceed. The `xlpod-server` dev
+  binary defaults to `AutoApproveConsent` for ergonomic smoke tests
+  and integration runs, and that backend is *never wired into the
+  shipping tray binary*. The deny path is verified end-to-end by
+  `handshake_consent_denied_short_circuits_token_issue`, which proves
+  no token is minted on denial.
+- **T30.** A second `unsafe` block (the `MessageBoxW` FFI in the
+  launcher crate) widens the audit surface for memory-safety review.
+  **Mitigation:** the block carries an inline `// SAFETY:` proof
+  enumerating every pointer/length the call relies on, the workspace
+  lint stays at `deny(unsafe_code)` so any *new* unsafe block requires
+  an explicit `#[allow]` and reviewer attention, and CI's
+  `clippy -- -D warnings` mirrors the gate. Workspace unsafe block
+  count: 2 (CA install in `xlpod-server::ca`, MessageBox in
+  `xlpod-launcher::consent_messagebox`).
+- **T31.** A slow user (or hung GUI) blocks the entire HTTP server
+  while the consent dialog is open. **Mitigation:** the
+  `MessageBoxConsent::request` future runs the actual `MessageBoxW`
+  call inside `tokio::task::spawn_blocking`, so the tokio runtime
+  keeps serving every other request. Only the single handshake task
+  that asked for consent is parked on the dialog.
+
 ### From Phase 1.4 (CI + commit-msg hook)
 - **T22.** AI-tool attribution slips into a commit message. Not a
   security threat per se, but a policy violation that erodes trust.

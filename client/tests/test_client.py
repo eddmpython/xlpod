@@ -134,6 +134,15 @@ async def test_origin_not_allowed_maps_to_specific_exception() -> None:
 
 
 @pytest.mark.asyncio
+async def test_consent_denied_maps_to_specific_exception() -> None:
+    transport = FakeTransport([_err(403, "consent_denied", hint="approve in tray")])
+    client = xlpod.AsyncClient(transport=transport)
+    with pytest.raises(xlpod.ConsentDenied) as ei:
+        await client.handshake(scopes=["fs:read"], fs_roots=["/tmp"])
+    assert ei.value.code == "consent_denied"
+
+
+@pytest.mark.asyncio
 async def test_reserved_scope_maps_to_specific_exception() -> None:
     transport = FakeTransport([_err(400, "reserved_scope")])
     client = xlpod.AsyncClient(transport=transport)

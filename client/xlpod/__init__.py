@@ -11,6 +11,7 @@ from ._proto import DEFAULT_BASE_URL, DEFAULT_ORIGIN, PROTO
 from .client import AsyncClient, Client
 from .errors import (
     BadRequest,
+    ConsentDenied,
     ForbiddenPath,
     HostNotAllowed,
     LauncherUnreachable,
@@ -32,6 +33,7 @@ __all__ = [
     "AsyncClient",
     "BadRequest",
     "Client",
+    "ConsentDenied",
     "DEFAULT_BASE_URL",
     "DEFAULT_ORIGIN",
     "FileContent",

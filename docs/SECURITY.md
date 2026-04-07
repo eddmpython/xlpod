@@ -34,6 +34,15 @@ options that exist get turned on.
    issuing a token that carries `fs_roots`.
 6. **User consent.** Sensitive operations require an explicit, fresh
    tray confirmation. Consent grants narrow scopes to one token.
+   Implementation lives in `xlpod_server::consent::ConsentBackend`:
+   the production tray binary uses `MessageBoxConsent` (Win32
+   `MessageBoxW`, `MB_TOPMOST | MB_SYSTEMMODAL`) which shows the
+   requesting origin, the scopes, and the canonicalized fs roots
+   before any token is minted. The standalone `xlpod-server` dev
+   binary defaults to `AutoApproveConsent` for ergonomic smoke tests
+   and integration runs; that backend is *never wired into the tray
+   binary*, and a denial returns `consent_denied` with no token in
+   the body.
 7. **DNS-rebinding defense.** The `Host` header must equal
    `127.0.0.1:<port>` or `[::1]:<port>`.
 8. **Audit log.** Every request is appended to a JSONL audit log

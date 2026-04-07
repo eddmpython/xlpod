@@ -46,6 +46,16 @@ class ScopeDenied(XlpodError):
     """The token does not carry a scope required by this route."""
 
 
+class ConsentDenied(XlpodError):
+    """The user denied the handshake at the launcher's consent dialog.
+
+    Raised by ``handshake()`` when the launcher's tray asks the user
+    to approve the requested scopes/roots and the answer is no.
+    Retrying immediately is fine — the next call will trigger a fresh
+    dialog.
+    """
+
+
 class RateLimited(XlpodError):
     """Per-token rate limit exceeded (default 100 req/s/token)."""
 
@@ -79,6 +89,7 @@ _CODE_MAP: dict[str, type[XlpodError]] = {
     "host_not_allowed": HostNotAllowed,
     "unauthorized": Unauthorized,
     "scope_denied": ScopeDenied,
+    "consent_denied": ConsentDenied,
     "rate_limited": RateLimited,
     "reserved_scope": ReservedScope,
     "bad_request": BadRequest,

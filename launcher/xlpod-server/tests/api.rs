@@ -15,7 +15,12 @@ use reqwest::{Client, StatusCode};
 use serde_json::json;
 use tempfile::TempDir;
 use xlpod_server::{
-    audit::AuditLog, auth::TokenStore, make_app, rate_limit::RateLimiter, state::AppState,
+    audit::AuditLog,
+    auth::TokenStore,
+    consent::{AutoApproveConsent, ConsentBackend, DenyAllConsent},
+    make_app,
+    rate_limit::RateLimiter,
+    state::AppState,
 };
 
 const ORIGIN: &str = "https://addin.xlwings.org";
@@ -27,6 +32,10 @@ struct Harness {
 }
 
 async fn spawn() -> Harness {
+    spawn_with_consent(Arc::new(AutoApproveConsent)).await
+}
+
+async fn spawn_with_consent(consent: Arc<dyn ConsentBackend>) -> Harness {
     let dir = tempfile::tempdir().expect("tempdir");
     let audit = AuditLog::open(dir.path().join("audit.log"))
         .await
@@ -40,6 +49,7 @@ async fn spawn() -> Harness {
         limiter: Arc::new(RateLimiter::new()),
         audit,
         allowed_hosts: Arc::new(vec![format!("{addr}")]),
+        consent,
     };
     let app = make_app(state);
     tokio::spawn(async move {
@@ -188,6 +198,30 @@ async fn version_with_unknown_token() {
         .await
         .expect("send");
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+// ---- consent ---------------------------------------------------------------
+
+#[tokio::test]
+async fn handshake_consent_denied_short_circuits_token_issue() {
+    let h = spawn_with_consent(Arc::new(DenyAllConsent)).await;
+    let resp = handshake(&h, json!(["run:python"])).await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let body: serde_json::Value = resp.json().await.expect("json");
+    assert_eq!(body["code"], "consent_denied");
+    // The body must NOT contain a token field — denial happens before
+    // any token is minted.
+    assert!(body.get("token").is_none());
+}
+
+#[tokio::test]
+async fn handshake_consent_skipped_for_empty_scope_set() {
+    // No scopes requested = nothing to consent to. The deny backend
+    // should not even be consulted, and the issued token is harmless
+    // (it has no scopes attached).
+    let h = spawn_with_consent(Arc::new(DenyAllConsent)).await;
+    let resp = handshake(&h, json!([])).await;
+    assert_eq!(resp.status(), StatusCode::OK);
 }
 
 // ---- /fs/read --------------------------------------------------------------

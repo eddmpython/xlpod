@@ -11,6 +11,7 @@ pub enum ApiError {
     HostNotAllowed,
     Unauthorized,
     ScopeDenied,
+    ConsentDenied,
     RateLimited,
     BadRequest,
     ReservedScope,
@@ -35,6 +36,7 @@ impl ApiError {
             ApiError::OriginNotAllowed
             | ApiError::HostNotAllowed
             | ApiError::ScopeDenied
+            | ApiError::ConsentDenied
             | ApiError::ForbiddenPath => StatusCode::FORBIDDEN,
             ApiError::Unauthorized => StatusCode::UNAUTHORIZED,
             ApiError::RateLimited => StatusCode::TOO_MANY_REQUESTS,
@@ -67,6 +69,11 @@ impl ApiError {
                 code: "scope_denied",
                 message: "token does not carry the required scope",
                 hint: None,
+            },
+            ApiError::ConsentDenied => ErrorBody {
+                code: "consent_denied",
+                message: "user denied the handshake at the consent dialog",
+                hint: Some("ask the user to approve in the launcher tray"),
             },
             ApiError::RateLimited => ErrorBody {
                 code: "rate_limited",

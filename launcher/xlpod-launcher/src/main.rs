@@ -17,7 +17,9 @@
 
 #![allow(clippy::expect_used)] // binary entry point — failure is fatal anyway
 
-use std::thread;
+mod consent_messagebox;
+
+use std::{sync::Arc, thread};
 
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tray_icon::{
@@ -28,6 +30,8 @@ use xlpod_server::{
     bind::{addr_v4, LAUNCHER_VERSION, PROTO},
     serve, ServeOptions,
 };
+
+use crate::consent_messagebox::MessageBoxConsent;
 
 fn main() {
     eprintln!("xlpod-launcher v{LAUNCHER_VERSION} (proto {PROTO})");
@@ -78,10 +82,17 @@ fn run_server_thread() {
         .build()
         .expect("tokio runtime");
     rt.block_on(async {
-        let opts = ServeOptions::from_env();
+        // Production launcher always uses the MessageBox consent
+        // backend. There is no flag to swap it for AutoApprove —
+        // ServeOptions::from_env() defaults to AutoApprove for the
+        // standalone dev binary, and the tray binary intentionally
+        // overrides that here.
+        let mut opts = ServeOptions::from_env();
+        opts.consent = Arc::new(MessageBoxConsent);
         eprintln!("xlpod-server: cert  {}", opts.tls.cert.display());
         eprintln!("xlpod-server: audit {}", opts.audit_path.display());
         eprintln!("xlpod-server: listening on https://{}", addr_v4());
+        eprintln!("xlpod-server: consent backend = MessageBox (Win32)");
         if let Err(e) = serve(opts).await {
             eprintln!("xlpod-server: exited with error: {e}");
         }

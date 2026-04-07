@@ -96,12 +96,19 @@ paths:
       tags: [auth]
       summary: Issue a fresh bearer token with a narrow scope set.
       description: |
-        Validates the Origin header against `x-xlpod-allowed-origins`, then
-        issues a new 256-bit random bearer token. The launcher MAY downgrade
-        the requested scopes (returning a subset in `granted_scopes`) based
-        on the user's tray consent decision. A token issued without consent
-        is granted the empty scope set and can only call `/launcher/version`
-        and `/ws` ping/pong.
+        Validates the Origin header against `x-xlpod-allowed-origins`,
+        canonicalizes any requested `fs_roots`, then **prompts the user
+        for consent via the launcher's tray dialog** before issuing a
+        token. If the user denies (or the consent backend rejects), the
+        call returns 403 with code `consent_denied` and no token is
+        ever created. On approval the launcher mints a new 256-bit
+        random bearer token bound to the granted scopes and roots.
+
+        The user's decision is the final word: a launcher with the
+        default `MessageBoxConsent` backend cannot be bypassed from the
+        wire. Test and dev binaries can replace the backend with
+        `AutoApproveConsent`; the production tray launcher does not
+        expose that escape.
 
         Tokens are NEVER persisted to disk and NEVER logged (the audit log
         records only the token id, not the secret). A new token is issued at
@@ -402,6 +409,7 @@ components:
             - "origin_not_allowed"
             - "scope_denied"
             - "rate_limited"
+            - "consent_denied"
             - "forbidden_path"
             - "path_too_large"
             - "not_a_file"

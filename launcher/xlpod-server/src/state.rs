@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::{audit::AuditLog, auth::TokenStore, rate_limit::RateLimiter};
+use crate::{audit::AuditLog, auth::TokenStore, consent::ConsentBackend, rate_limit::RateLimiter};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -14,4 +14,8 @@ pub struct AppState {
     /// integration tests inject the actual bound address since they use a
     /// random port.
     pub allowed_hosts: Arc<Vec<String>>,
+    /// Consent backend consulted by `/auth/handshake` before any token
+    /// is issued. Production tray launcher uses `MessageBoxConsent`;
+    /// the standalone dev binary defaults to `AutoApproveConsent`.
+    pub consent: Arc<dyn ConsentBackend>,
 }

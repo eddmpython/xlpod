@@ -11,6 +11,7 @@ pub mod bind;
 #[cfg(windows)]
 pub mod ca;
 pub mod config;
+pub mod consent;
 pub mod error;
 pub mod fs_read;
 pub mod middleware;
@@ -23,21 +24,30 @@ pub use routes::router as make_app;
 
 use std::{path::PathBuf, sync::Arc};
 
+use crate::consent::{AutoApproveConsent, ConsentBackend};
+
 /// Inputs to `serve()` — kept as a struct so the binary and the future
 /// tray launcher can both build it from their own argument parsers.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ServeOptions {
     pub tls: tls::TlsPaths,
     pub audit_path: PathBuf,
+    pub consent: Arc<dyn ConsentBackend>,
 }
 
 impl ServeOptions {
+    /// Default options for the standalone `xlpod-server` dev binary:
+    /// reads TLS material from env or `.certs/`, audit log under
+    /// `%LOCALAPPDATA%`, and `AutoApproveConsent` so manual smoke
+    /// tests do not block on a dialog. The tray launcher constructs
+    /// `ServeOptions` directly with `MessageBoxConsent` instead.
     pub fn from_env() -> Self {
         Self {
             tls: tls::TlsPaths::from_env_or_default(),
             audit_path: std::env::var_os("XLPOD_AUDIT_PATH")
                 .map(PathBuf::from)
                 .unwrap_or_else(config::default_audit_path),
+            consent: Arc::new(AutoApproveConsent),
         }
     }
 }
@@ -74,6 +84,7 @@ pub async fn serve(opts: ServeOptions) -> Result<(), ServeError> {
         limiter: Arc::new(rate_limit::RateLimiter::new()),
         audit: audit_log,
         allowed_hosts: Arc::new(config::allowed_hosts().to_vec()),
+        consent: opts.consent,
     };
     let app = make_app(state);
     let addr = bind::addr_v4();

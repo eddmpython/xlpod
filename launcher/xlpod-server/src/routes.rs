@@ -10,6 +10,7 @@ use axum::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         Extension, Query, State,
     },
+    http::HeaderMap,
     middleware::{from_fn, from_fn_with_state},
     response::Response,
     routing::{get, post},
@@ -23,6 +24,7 @@ use crate::{
     auth::Scope,
     bind::{LAUNCHER_VERSION, PROTO},
     config::TOKEN_TTL_SECS,
+    consent::ConsentRequest,
     error::ApiError,
     fs_read::{canonicalize_roots, read_under_roots},
     middleware::{
@@ -67,6 +69,7 @@ struct HandshakeResponse {
 
 async fn handshake(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(body): Json<HandshakeRequest>,
 ) -> Result<Json<HandshakeResponse>, ApiError> {
     if body.requested_scopes.iter().any(|s| s.is_reserved()) {
@@ -88,8 +91,30 @@ async fn handshake(
     } else {
         Vec::new()
     };
-    // Phase 1.2: grant exactly what was requested. Phase 4 will route
-    // through a tray consent dialog and may downgrade.
+
+    // Phase 4: ask the user (or the configured ConsentBackend) to
+    // approve this handshake before any token is minted. Empty scope
+    // sets are passed through unchallenged because the resulting token
+    // can only call the public probes.
+    if !body.requested_scopes.is_empty() {
+        let origin = headers
+            .get(axum::http::header::ORIGIN)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        let approved = state
+            .consent
+            .request(ConsentRequest {
+                origin,
+                scopes: body.requested_scopes.clone(),
+                fs_roots: granted_roots.clone(),
+            })
+            .await;
+        if !approved {
+            return Err(ApiError::ConsentDenied);
+        }
+    }
+
     let granted = body.requested_scopes.clone();
     let (token, _record) = state.tokens.issue(granted.clone(), granted_roots.clone());
     Ok(Json(HandshakeResponse {

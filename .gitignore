@@ -1,0 +1,46 @@
+# Claude Code / AI tool local config — never commit
+.claude/
+CLAUDE.md
+**/.claude/
+**/CLAUDE.md
+
+# uv / Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+dist/
+build/
+*.egg-info/
+
+# Tauri / Rust (future)
+launcher/src-tauri/target/
+launcher/src-tauri/gen/
+target/
+
+# Node (Tauri UI, future)
+node_modules/
+
+# Certificates / keys / secrets — never commit
+.certs/
+*.pem
+*.key
+*.crt
+*.cer
+*.p12
+*.pfx
+audit.log
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp

@@ -1,0 +1,26 @@
+xlpod
+Copyright 2026 The xlpod Authors
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+xlpod is an independent open-source project, not affiliated with
+Zoomer Analytics (xlwings) or Microsoft.
+
+This product will, when distributed, redistribute the following
+third-party components. Each is governed by its own license; full
+license texts are reproduced in the binary distributions:
+
+  - Python (PSF License)
+  - xlwings (BSD-3-Clause)
+  - pywin32 (PSF License)
+  - Tauri (MIT / Apache-2.0)
+  - rustls (Apache-2.0 / ISC / MIT)
+  - axum, tokio (MIT)
+
+The "xlwings" name is a trademark of its respective owner and is
+referenced here only for interoperability description. xlpod does
+not use the xlwings name in its product identity.

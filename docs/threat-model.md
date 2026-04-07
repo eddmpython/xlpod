@@ -223,6 +223,27 @@ New surface introduced after the initial draft and the threats it brings:
   in-flight chat request is blocked, never the launcher's other
   consumers.
 
+### From Phase 12 (Lite panel demo)
+
+- **T56 (malicious snapshot restore)**: a hostile workbook ships
+  a `pyodide_snapshot` payload that, when restored in a recipient's
+  Lite panel, executes attacker-chosen code as the user's Pyodide
+  session. **Mitigation deferred to Phase 13+**: the Phase 12
+  panel script stores AI conversation history only, and *does not
+  yet* invoke `decode_snapshot()` on the bundle's pyodide field
+  during restore. When snapshot restore lands, it will gate on a
+  `workbook_fingerprint` match against the user's earlier
+  authoring session — restoring a snapshot from an unknown source
+  will require an explicit consent dialog.
+
+- **T57 (fake-launcher in dev environment)**: a developer running
+  the headless test harness (`test_lite_panel.py`) accidentally
+  hits a real launcher running on the same box and modifies a
+  user file. **Mitigation**: the test harness *only* uses
+  `FakeTransport`, never `autodetect()`, so the test process
+  never opens a network socket. The harness panel construction
+  takes the transport as a constructor argument explicitly.
+
 ### From Phase 11 (`/bundle/*` launcher routes)
 
 - **T53 (bundle path traversal)**: caller writes a bundle to a

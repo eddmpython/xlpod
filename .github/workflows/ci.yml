@@ -72,19 +72,28 @@ jobs:
         run: npx --yes @redocly/cli@latest lint proto/xlpod.openapi.yaml
 
   # ---------------------------------------------------------------------
-  # uv workspace sanity. Phase 1 has no Python source yet beyond the
-  # Phase 0 probe; this job exists to keep `uv sync` healthy as deps
-  # land in client/ during Phase 2.
+  # uv workspace + xlpod client tests. Runs on every supported Python
+  # minor so we catch typing / stdlib regressions across the matrix.
   # ---------------------------------------------------------------------
   python:
-    name: uv sync
+    name: python ${{ matrix.python }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - name: Install uv
         uses: astral-sh/setup-uv@v5
-      - name: uv sync
-        run: uv sync --group phase0
+      - name: Pin python
+        run: uv python install ${{ matrix.python }}
+      - name: uv sync (workspace)
+        run: uv sync --python ${{ matrix.python }}
+      - name: pytest (xlpod client)
+        run: uv run --python ${{ matrix.python }} --package xlpod pytest client/tests -q
+      - name: build wheel + sdist
+        run: uv build --python ${{ matrix.python }} --package xlpod
 
   # ---------------------------------------------------------------------
   # Server-side mirror of .githooks/commit-msg. Catches AI traces in

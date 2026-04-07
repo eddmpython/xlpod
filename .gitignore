@@ -15,6 +15,8 @@ __pycache__/
 dist/
 build/
 *.egg-info/
+**/dist/
+**/build/
 
 # Tauri / Rust (future)
 launcher/src-tauri/target/

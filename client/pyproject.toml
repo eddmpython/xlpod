@@ -1,0 +1,52 @@
+[project]
+name = "xlpod"
+version = "0.0.0"
+description = "Pure-python client for the xlpod loopback launcher. Works on CPython and Pyodide / xlwings Lite."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "xlpod maintainers" }]
+keywords = ["excel", "xlwings", "pyodide", "loopback", "launcher"]
+classifiers = [
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: OS Independent",
+    "Intended Audience :: Developers",
+    "Topic :: Office/Business :: Financial :: Spreadsheet",
+]
+
+# httpx is the CPython HTTP transport. Pyodide builds use the
+# environment-provided `pyodide.http` instead, so we skip the dep there.
+# The `sys_platform != 'emscripten'` marker is honoured by both pip and
+# micropip.
+dependencies = [
+    "httpx>=0.27 ; sys_platform != 'emscripten'",
+]
+
+[project.urls]
+Homepage = "https://github.com/eddmpython/xlpod"
+Source = "https://github.com/eddmpython/xlpod"
+Issues = "https://github.com/eddmpython/xlpod/issues"
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["xlpod"]
+
+[tool.hatch.build.targets.sdist]
+include = ["xlpod", "README.md", "tests"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

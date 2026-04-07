@@ -177,6 +177,20 @@ New surface introduced after the initial draft and the threats it brings:
   but the worker is not a separate trust domain — only the OS user
   is. This is identical to the `/run/python` posture and is
   documented under the same "no sandbox" caveat (T32).
+
+  **Phase 7 update:** the worker now selects an Excel backend by
+  trying `xlwings` first and falling back to raw `pywin32` (the
+  Phase 5/6 path) if xlwings is not importable. Both code paths
+  live inside the same embedded worker script and the same trust
+  boundary; neither one is a separate trust domain. The selector
+  honours `XLPOD_WORKER_BACKEND={auto|xlwings|pywin32}` for forcing
+  a specific path in tests, and four new Python unit tests
+  (`client/tests/test_worker_backend.py`) verify the selector
+  cannot silently cross over between backends. design.md §5 axis 1
+  (xlwings install automation in the launcher's embedded Python) is
+  *not* implemented in this Phase — Phase 7 only fixes the
+  worker's preference order so that *if* xlwings is later installed
+  by axis 1 work, the worker uses it without further code change.
 - **T40.** `pywin32` missing or Excel not running degrades to a
   hard 503 instead of leaking implementation noise. **Mitigation:**
   the worker explicitly catches `ImportError` and `pywintypes.com_error`

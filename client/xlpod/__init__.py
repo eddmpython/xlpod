@@ -8,6 +8,19 @@ over that spec.
 from __future__ import annotations
 
 from ._proto import DEFAULT_BASE_URL, DEFAULT_ORIGIN, PROTO
+from .bundle import (
+    BUNDLE_NAMESPACE,
+    BUNDLE_PART_PATH,
+    BUNDLE_SCHEMA_VERSION,
+    BundleCorrupt,
+    BundleError,
+    BundleNotFound,
+    BundlePayload,
+    BundleReader,
+    BundleSchemaMismatch,
+    BundleTooLarge,
+    BundleWriter,
+)
 from .client import AsyncClient, Client
 from .errors import (
     AIConsentDenied,
@@ -53,6 +66,17 @@ from .models import (
 __version__ = "0.0.0"
 
 __all__ = [
+    "BUNDLE_NAMESPACE",
+    "BUNDLE_PART_PATH",
+    "BUNDLE_SCHEMA_VERSION",
+    "BundleCorrupt",
+    "BundleError",
+    "BundleNotFound",
+    "BundlePayload",
+    "BundleReader",
+    "BundleSchemaMismatch",
+    "BundleTooLarge",
+    "BundleWriter",
     "AIConsentDenied",
     "AIPlanOnlyViolation",
     "AIProviderUnconfigured",

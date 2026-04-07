@@ -223,6 +223,33 @@ New surface introduced after the initial draft and the threats it brings:
   in-flight chat request is blocked, never the launcher's other
   consumers.
 
+### From Phase 10 (workbook bundle reader/writer)
+
+- **T50 (zip bomb in bundle)**: a hostile workbook ships a custom
+  XML part that decompresses to gigabytes. **Mitigation**:
+  `BundleReader` rejects parts larger than `MAX_BUNDLE_BYTES` (64
+  MiB) at the zip-entry level *before* unwrapping the XML envelope
+  or running `json.loads`. The same cap applies to `_encode_snapshot`
+  on the writer side, so a malicious launcher cannot craft an
+  oversized payload either.
+
+- **T51 (Lite custom part collision)**: bundle write clobbers the
+  xlwings Lite Python source part. **Mitigation**: the writer
+  copies every existing zip entry by name and only replaces the
+  one whose path matches `customXml/xlpodBundle.json`; other
+  custom parts (Lite at `customXml/item1.xml`, Excel's own slots)
+  are preserved byte-for-byte. The
+  `test_round_trip_preserves_lite_custom_part` regression test
+  verifies the property on every CI run.
+
+- **T52 (schema downgrade attack)**: a hostile bundle declares an
+  unknown future schema_version to trick a Phase 10 reader into
+  silently ignoring fields. **Mitigation**: `BundleReader` raises
+  `BundleSchemaMismatch` on any version newer than the constant it
+  was compiled against; there is no silent forward-compatibility
+  for the *root* shape. Individual fields the reader does not
+  recognize are dropped, not silently respected.
+
 ### From Phase 9 (cost ledger + trust windows)
 
 - **T47 (cost ledger tampering)**: a process running as the user
